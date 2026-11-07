@@ -28,6 +28,10 @@ export const composerPillStyles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
+    // The track is one non-wrapping row: without this the pills keep their full label width and
+    // the last one is pushed past the viewport on a phone. The label truncates instead.
+    flexShrink: 1,
+    minWidth: 0,
     minHeight: COMPOSER_PILL_MIN_HEIGHT,
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[1],
