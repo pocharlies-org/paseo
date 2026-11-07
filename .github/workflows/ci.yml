@@ -65,8 +65,8 @@ jobs:
           files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA")
           mode=full
           specs=""
-          outside=$(echo "$files" | grep -cvE '^packages/app/(src|e2e)/')
-          shared=$(echo "$files" | grep -cE '^packages/app/(e2e/support/|src/(app|components|constants|contexts|data|hooks|i18n|lib|navigation|runtime|screens|stores|styles|types|utils|desktop)/)')
+          outside=$(echo "$files" | grep -cvE '^packages/app/(src|e2e)/' || true)
+          shared=$(echo "$files" | grep -cE '^packages/app/(e2e/support/|src/(app|components|constants|contexts|data|hooks|i18n|lib|navigation|runtime|screens|stores|styles|types|utils|desktop)/)' || true)
           if [ "$outside" = 0 ] && [ "$shared" = 0 ]; then
             specs=$(echo "$files" | grep -E '^packages/app/e2e/browser/[^ ]*\.spec\.ts$' || true)
             areas=$(echo "$files" | grep -E '^packages/app/src/[^/]+/' | cut -d/ -f4 | sort -u)
