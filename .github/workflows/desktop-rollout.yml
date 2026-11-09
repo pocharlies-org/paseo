@@ -21,6 +21,8 @@ env:
 
 jobs:
   stamp:
+    # fork pocharlies-org: job del proyecto upstream, aquí no corre (INFRA-1218)
+    if: github.repository == 'getpaseo/paseo'
     permissions:
       contents: write
     runs-on: ubuntu-latest

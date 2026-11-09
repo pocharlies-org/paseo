@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   build:
+    # fork pocharlies-org: job del proyecto upstream, aquí no corre (INFRA-1218)
+    if: github.repository == 'getpaseo/paseo'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,6 +103,8 @@ jobs:
         run: nix build .#desktop -o result-desktop
 
   build-desktop-darwin:
+    # fork pocharlies-org: job del proyecto upstream, aquí no corre (INFRA-1218)
+    if: github.repository == 'getpaseo/paseo'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4

@@ -38,6 +38,8 @@ env:
 
 jobs:
   setup:
+    # fork pocharlies-org: job del proyecto upstream, aquí no corre (INFRA-1218)
+    if: github.repository == 'getpaseo/paseo'
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.values.outputs.image }}
@@ -112,7 +114,8 @@ jobs:
 
   build:
     needs: setup
-    if: needs.setup.outputs.publish != 'true'
+    # fork pocharlies-org: job del proyecto upstream, aquí no corre (INFRA-1218)
+    if: github.repository == 'getpaseo/paseo' && (needs.setup.outputs.publish != 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -137,7 +140,8 @@ jobs:
 
   publish:
     needs: setup
-    if: needs.setup.outputs.publish == 'true'
+    # fork pocharlies-org: job del proyecto upstream, aquí no corre (INFRA-1218)
+    if: github.repository == 'getpaseo/paseo' && (needs.setup.outputs.publish == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read

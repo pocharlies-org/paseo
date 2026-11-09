@@ -11,6 +11,8 @@ on:
 
 jobs:
   deploy:
+    # fork pocharlies-org: job del proyecto upstream, aquí no corre (INFRA-1218)
+    if: github.repository == 'getpaseo/paseo'
     runs-on: ubuntu-latest
 
     steps:
