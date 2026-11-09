@@ -21,6 +21,8 @@ env:
 
 jobs:
   ensure-release:
+    # INFRA-1218: job del upstream getpaseo/paseo; queda skipped en el fork
+    if: github.repository == 'getpaseo/paseo'
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -63,6 +65,8 @@ jobs:
           fi
 
   publish-android-apk:
+    # INFRA-1218: job del upstream getpaseo/paseo; queda skipped en el fork
+    if: github.repository == 'getpaseo/paseo'
     needs: [ensure-release]
     permissions:
       contents: write

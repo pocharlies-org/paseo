@@ -7,6 +7,8 @@ on:
 
 jobs:
   deploy:
+    # INFRA-1218: job del upstream getpaseo/paseo; queda skipped en el fork
+    if: github.repository == 'getpaseo/paseo'
     runs-on: ubuntu-latest
 
     steps:

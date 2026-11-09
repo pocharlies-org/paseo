@@ -18,7 +18,8 @@ on:
 
 jobs:
   deploy:
-    if: ${{ github.event_name != 'release' || (!github.event.release.prerelease && !github.event.release.draft) }}
+    # INFRA-1218: job del upstream getpaseo/paseo; queda skipped en el fork
+    if: ${{ github.repository == 'getpaseo/paseo' && (github.event_name != 'release' || (!github.event.release.prerelease && !github.event.release.draft) ) }}
     runs-on: ubuntu-latest
 
     steps:

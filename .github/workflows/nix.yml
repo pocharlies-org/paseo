@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   build:
+    # INFRA-1218: job del upstream getpaseo/paseo; queda skipped en el fork
+    if: github.repository == 'getpaseo/paseo'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,6 +103,8 @@ jobs:
         run: nix build .#desktop -o result-desktop
 
   build-desktop-darwin:
+    # INFRA-1218: job del upstream getpaseo/paseo; queda skipped en el fork
+    if: github.repository == 'getpaseo/paseo'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

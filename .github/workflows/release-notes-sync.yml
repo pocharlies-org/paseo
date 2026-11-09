@@ -26,6 +26,8 @@ concurrency:
 
 jobs:
   sync-release-notes:
+    # INFRA-1218: job del upstream getpaseo/paseo; queda skipped en el fork
+    if: github.repository == 'getpaseo/paseo'
     runs-on: ubuntu-latest
     permissions:
       contents: write
