@@ -38,6 +38,8 @@ jobs:
       browser: ${{ steps.filter.outputs.browser }}
       relay: ${{ steps.filter.outputs.relay }}
       cli: ${{ steps.filter.outputs.cli }}
+      e2e_mode: ${{ steps.e2e-routing.outputs.mode || 'full' }}
+      e2e_specs: ${{ steps.e2e-routing.outputs.specs }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -52,6 +54,33 @@ jobs:
         uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3.0.3
         with:
           filters: .github/ci-paths.yml
+
+      - name: Route E2E specs to the areas the PR touches
+        id: e2e-routing
+        if: github.event_name == 'pull_request'
+        run: |
+          # src/<area> routes to e2e/browser/*<area>*.spec.ts by substring. Anything the
+          # map cannot name — shared src dirs, e2e infra, config, assets, files outside
+          # packages/app — keeps the full run. shortcut: area strings match spec names
+          # literally; a feature whose specs drift from its directory name falls back to
+          # full until someone maps it here.
+          files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA")
+          mode=full
+          specs=""
+          outside=$(echo "$files" | grep -cvE '^packages/app/(src|e2e)/' || true)
+          shared=$(echo "$files" | grep -cE '^packages/app/(e2e/support/|src/(app|components|constants|contexts|data|hooks|i18n|lib|navigation|runtime|screens|stores|styles|types|utils|desktop)/)' || true)
+          if [ "$outside" = 0 ] && [ "$shared" = 0 ]; then
+            specs=$(echo "$files" | grep -E '^packages/app/e2e/browser/[^ ]*\.spec\.ts$' || true)
+            areas=$(echo "$files" | grep -E '^packages/app/src/[^/]+/' | cut -d/ -f4 | sort -u)
+            for area in $areas; do
+              matched=$(ls packages/app/e2e/browser/ | grep -F "$area" | sed 's|^|packages/app/e2e/browser/|' || true)
+              if [ -z "$matched" ]; then specs=""; break; fi
+              specs="$specs $matched"
+            done
+            [ -n "$specs" ] && mode=subset
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "specs=$specs" >> "$GITHUB_OUTPUT"
 
       - name: Validate CI contracts
         run: node --test scripts/ci-workflow.test.mjs scripts/daemon-launch-contract.test.mjs scripts/sync-fdroid-changelogs.test.mjs scripts/upload-release-assets.test.mjs
@@ -324,6 +353,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -341,7 +372,13 @@ jobs:
         run: npm run build:app-deps
 
       - name: Run app unit tests
-        run: npm run test --workspace=@getpaseo/app
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            # Import-graph affected tests on PRs; main, merge queue and manual runs keep the full suite.
+            npm run test --workspace=@getpaseo/app -- --changed=origin/"$GITHUB_BASE_REF"
+          else
+            npm run test --workspace=@getpaseo/app
+          fi
 
   sdk-tests:
     name: sdk-tests
@@ -415,9 +452,18 @@ jobs:
         run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
 
       - name: Run Playwright E2E tests
-        run: npm run test:e2e --workspace=@getpaseo/app -- --shard=${{ env.PLAYWRIGHT_SHARD }}
+        run: |
+          if [ "$E2E_MODE" = subset ]; then
+            # Spec paths come from the repo tree; word-splitting is intended.
+            # shellcheck disable=SC2086
+            npm run test:e2e --workspace=@getpaseo/app -- --shard=${{ env.PLAYWRIGHT_SHARD }} $E2E_SPECS
+          else
+            npm run test:e2e --workspace=@getpaseo/app -- --shard=${{ env.PLAYWRIGHT_SHARD }}
+          fi
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          E2E_MODE: ${{ needs.changes.outputs.e2e_mode }}
+          E2E_SPECS: ${{ needs.changes.outputs.e2e_specs }}
           # Weight file groups by observed duration; raw test counts overload
           # early agent/Changes specs. Required check names remain unchanged.
           PWTEST_SHARD_WEIGHTS: "111:172:137:160"
