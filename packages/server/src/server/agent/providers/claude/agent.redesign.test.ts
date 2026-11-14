@@ -218,6 +218,76 @@ test("rejects auto mode when Claude Code uses Bedrock", async () => {
   }
 });
 
+test("rejects auto mode for a non-Claude model and hides it from the mode list", async () => {
+  const queryMock = createBaseQueryMock(vi.fn(async () => ({ done: true, value: undefined })));
+  sdkQueryFactory.mockImplementation(() => queryMock);
+  const client = new ClaudeAgentClient({
+    logger: createTestLogger(),
+    queryFactory: sdkQueryFactory,
+    resolveBinary: async () => "/test/claude/bin",
+  });
+  const session = await client.createSession({
+    provider: "claude",
+    cwd: process.cwd(),
+    model: "qwen38-flash-next",
+  });
+
+  try {
+    await expect(session.getAvailableModes()).resolves.not.toContainEqual(
+      expect.objectContaining({ id: "auto" }),
+    );
+    await expect(session.setMode("auto")).rejects.toThrow(
+      "Claude Auto mode bills its classifier to the session's model route and is not available for model 'qwen38-flash-next'",
+    );
+    expect(queryMock.setPermissionMode).not.toHaveBeenCalled();
+  } finally {
+    await session.close();
+  }
+});
+
+test("defaults to default mode for a non-Claude model and keeps auto for Claude models", async () => {
+  const client = new ClaudeAgentClient({
+    logger: createTestLogger(),
+    runtimeSettings: { env: {} },
+  });
+
+  await expect(
+    client.resolveDefaultModeId({
+      config: { provider: "claude", cwd: process.cwd(), model: "qwen38-flash-next" },
+    }),
+  ).resolves.toBe("default");
+  await expect(
+    client.resolveDefaultModeId({
+      config: { provider: "claude", cwd: process.cwd(), model: "claude-sonnet-5-5" },
+    }),
+  ).resolves.toBe("auto");
+});
+
+test("drops a running session out of auto mode when the model switches to a non-Claude model", async () => {
+  const queryMock = createBaseQueryMock(vi.fn(async () => ({ done: true, value: undefined })));
+  sdkQueryFactory.mockImplementation(() => queryMock);
+  const client = new ClaudeAgentClient({
+    logger: createTestLogger(),
+    queryFactory: sdkQueryFactory,
+    resolveBinary: async () => "/test/claude/bin",
+  });
+  const session = await client.createSession({
+    provider: "claude",
+    cwd: process.cwd(),
+    model: "claude-sonnet-5-5",
+    modeId: "auto",
+  });
+
+  try {
+    await session.setModel("qwen38-flash-next");
+
+    expect(await session.getCurrentMode()).toBe("default");
+    expect(queryMock.setPermissionMode).toHaveBeenCalledWith("default");
+  } finally {
+    await session.close();
+  }
+});
+
 test.each([
   { env: {}, expected: "auto" },
   { env: { CLAUDE_CODE_USE_BEDROCK: "1" }, expected: "default" },
