@@ -4428,7 +4428,10 @@ export class AgentManager {
     switch (event.type) {
       case "thread_started":
         this.onStreamThreadStarted(agent);
-        return undefined;
+        // The session's available modes depend on the model, which is only final once
+        // the provider has started; re-read them so the client's mode picker matches
+        // what setMode will accept (DGX-1596).
+        return this.refreshSessionState(agent);
       case "usage_updated":
         agent.lastUsage = event.usage;
         this.emitState(agent);
