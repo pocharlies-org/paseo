@@ -13,7 +13,7 @@
 //
 // Modes (mutually exclusive, order-independent; default is `--official`):
 //   --official  the upstream channel, which is what is committed.
-//   --own       the pocharlies/paseo GitHub releases channel AND an explicit own npm
+//   --own       the pocharlies-org/paseo GitHub releases channel AND an explicit own npm
 //               package. FAIL-CLOSED: --own refuses to run unless --npm-cli-package and
 //               --npm-server-package are both supplied and differ from the official
 //               @getpaseo/* packages. There is no silent fallback to the official npm
@@ -121,7 +121,7 @@ export function resolveConfig(argv) {
   // Baseline from the mode, then explicit overrides applied last so flag order never
   // changes the result (no misleading "--own after --npm-* resets it" behaviour).
   const baseline = mode === "own" ? OWN_DISTRIBUTION : OFFICIAL_DISTRIBUTION;
-  const config = { ...baseline, ...stripUndefined(overrides) };
+  const config = { ...baseline, ...overrides };
 
   if (mode === "own") {
     assertOwnNpmChannel(config);
@@ -129,14 +129,6 @@ export function resolveConfig(argv) {
 
   validateConfig(config);
   return { mode, config };
-}
-
-function stripUndefined(obj) {
-  const out = {};
-  for (const [key, value] of Object.entries(obj)) {
-    if (value !== undefined) out[key] = value;
-  }
-  return out;
 }
 
 // Fail-closed: an own channel must point at its own npm packages. Missing or official
