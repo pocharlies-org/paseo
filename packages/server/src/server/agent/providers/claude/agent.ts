@@ -1001,9 +1001,25 @@ function claudeAutoModeUnavailableOn(env: NodeJS.ProcessEnv): "Bedrock" | "Verte
   return null;
 }
 
-function assertClaudeModeCanRun(mode: PermissionMode, env: NodeJS.ProcessEnv): void {
+// The auto-mode classifier bills to the session's model route: only Anthropic answers the
+// server-side safeguard check for free, so auto mode is for Claude models. An unset model
+// keeps the SDK default, which is a Claude model.
+function isClaudeModelId(modelId: string | undefined): boolean {
+  return modelId === undefined || /^claude[-.]/i.test(modelId);
+}
+
+function assertClaudeModeCanRun(
+  mode: PermissionMode,
+  env: NodeJS.ProcessEnv,
+  modelId?: string,
+): void {
   if (mode !== "auto") {
     return;
+  }
+  if (!isClaudeModelId(modelId)) {
+    throw new Error(
+      `Claude Auto mode bills its classifier to the session's model route and is not available for model '${modelId}'. Select another permission mode or pick a Claude model.`,
+    );
   }
   const transport = claudeAutoModeUnavailableOn(env);
   if (transport === null) {
@@ -1693,8 +1709,15 @@ export class ClaudeAgentClient implements AgentClient {
     };
   }
 
-  async resolveDefaultModeId({ env: launchEnv }: ResolveAgentDefaultModeInput): Promise<string> {
-    return claudeModeCatalog(this.buildProviderEnv(launchEnv)).defaultModeId;
+  async resolveDefaultModeId({
+    config,
+    env: launchEnv,
+  }: ResolveAgentDefaultModeInput): Promise<string> {
+    const { defaultModeId } = claudeModeCatalog(this.buildProviderEnv(launchEnv));
+    if (defaultModeId === "auto" && !isClaudeModelId(config.model)) {
+      return "default";
+    }
+    return defaultModeId;
   }
 
   private buildProviderEnv(launchEnv?: Record<string, string>): NodeJS.ProcessEnv {
@@ -2219,7 +2242,12 @@ class ClaudeAgentSession implements AgentSession {
   private persistence: AgentPersistenceHandle | null;
   private currentMode: PermissionMode;
   private planResumeMode: PermissionMode | null = null;
-  private availableModes: AgentMode[] = DEFAULT_MODES;
+  // Derived from the session model: auto mode is Claude-only (see isClaudeModelId).
+  private get availableModes(): AgentMode[] {
+    return isClaudeModelId(this.config.model)
+      ? DEFAULT_MODES
+      : DEFAULT_MODES.filter((mode) => mode.id !== "auto");
+  }
   private toolUseCache = new Map<string, ToolUseCacheEntry>();
   private toolUseIndexToId = new Map<number, string>();
   private toolUseInputBuffers = new Map<string, string>();
@@ -2614,7 +2642,7 @@ class ClaudeAgentSession implements AgentSession {
     }
 
     const normalized = isPermissionMode(modeId) ? modeId : "default";
-    assertClaudeModeCanRun(normalized, this.harnessEnvironment);
+    assertClaudeModeCanRun(normalized, this.harnessEnvironment, this.config.model);
     const previousMode = this.currentMode;
     const previousQuery = this.query;
     const activeQuery = await this.ensureQuery(normalized);
@@ -2641,6 +2669,9 @@ class ClaudeAgentSession implements AgentSession {
     const activeQuery = await this.ensureQuery();
     await activeQuery.setModel(normalizedModelId ?? undefined);
     this.config.model = normalizedModelId ?? undefined;
+    if (this.currentMode === "auto" && !isClaudeModelId(this.config.model)) {
+      await this.setMode("default");
+    }
     this.reconcileThinkingOptionForModel(normalizedModelId);
     if (!claudeModelSupportsFastMode(this.config.model) && this.config.featureValues?.fast_mode) {
       await this.applyFastModeFeature(false, activeQuery);
@@ -3507,7 +3538,7 @@ class ClaudeAgentSession implements AgentSession {
     );
     const settingsOptions = this.buildSettingsOptions(providerOptions, { ultracode });
     const sdkEnv = this.harnessEnvironment;
-    assertClaudeModeCanRun(permissionMode, sdkEnv);
+    assertClaudeModeCanRun(permissionMode, sdkEnv, this.config.model);
 
     const claudeBinary = await this.resolveBinary();
     this.logger.debug(
@@ -4903,7 +4934,6 @@ class ClaudeAgentSession implements AgentSession {
       threadStartedSessionId = newSessionId;
       notice = this.createClaudeSessionChangedNotice(existingSessionId, newSessionId);
     }
-    this.availableModes = DEFAULT_MODES;
     this.observePermissionMode(message.permissionMode);
     this.persistence = null;
     if (message.model) {
