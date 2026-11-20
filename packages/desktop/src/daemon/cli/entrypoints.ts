@@ -3,13 +3,14 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { app } from "electron";
 import type { NodeEntrypointSpec } from "../node-entrypoint-launcher.js";
+import { DISTRIBUTION } from "@getpaseo/protocol/distribution";
 import {
   assertPathExists,
   findPackageRootFromResolvedPath,
   resolvePackagedAsarPath,
 } from "../package-paths.js";
 
-const CLI_PACKAGE_NAME = "@getpaseo/cli";
+const CLI_PACKAGE_NAME = DISTRIBUTION.npmCliPackage;
 const CLI_BIN_ENTRY = `${CLI_PACKAGE_NAME}/bin/paseo`;
 const CLI_RUN_ENTRY = `${CLI_PACKAGE_NAME}/dist/run.js`;
 

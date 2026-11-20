@@ -47,4 +47,21 @@ describe("distribution", () => {
       githubReleaseDownloadBaseUrl({ ...OFFICIAL_DISTRIBUTION, githubOwner: "pocharlies" }),
     ).toBe("https://github.com/pocharlies/paseo/releases/download");
   });
+
+  it("an own distribution never resolves the official release feed", () => {
+    // The own config a packaging run bakes (set-distribution.mjs --own): every consumer
+    // that reads DISTRIBUTION — desktop feed, discovery, install, CLI — points at the fork.
+    const own = {
+      githubOwner: "pocharlies-org",
+      githubRepo: "paseo",
+      npmCliPackage: "@pocharlies/cli",
+      npmServerPackage: "@pocharlies/server",
+      npmCliDistTag: "latest",
+    };
+    expect(githubReleaseDownloadBaseUrl(own)).toBe(
+      "https://github.com/pocharlies-org/paseo/releases/download",
+    );
+    expect(own.npmCliPackage).not.toBe(OFFICIAL_DISTRIBUTION.npmCliPackage);
+    expect(own.npmServerPackage).not.toBe(OFFICIAL_DISTRIBUTION.npmServerPackage);
+  });
 });

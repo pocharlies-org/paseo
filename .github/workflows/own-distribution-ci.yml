@@ -28,9 +28,12 @@ jobs:
       - run: npm run build:client
       - run: npm run build:plugin
       - run: npm run build:highlight
-      - run: npx vitest run scripts/set-distribution.test.mjs --bail=1
+      - run: npx vitest run scripts/set-distribution.test.mjs scripts/pack-own-release.test.mjs --bail=1
       - run: npm exec --workspace=@getpaseo/protocol -- vitest run src/distribution.test.ts --bail=1
       - run: npm exec --workspace=@getpaseo/app -- vitest run src/plugins/buttons/model.test.ts --bail=1
+      - run: npm exec --workspace=@getpaseo/server -- vitest run src/server/session/daemon/npm-global-cli.test.ts --bail=1
       - run: npm run typecheck --workspace=@getpaseo/app
+      - run: npm run typecheck --workspace=@getpaseo/server
+      - run: npm run typecheck --workspace=@getpaseo/cli
       - run: npm run lint
       - run: npm run format:check

@@ -2,7 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { DefaultNpmGlobalPaseoCli } from "./npm-global-cli.js";
+import {
+  DefaultNpmGlobalPaseoCli,
+  isOwnReleaseChannel,
+  parseOwnRelease,
+  resolveLatestOwnRelease,
+  type OwnReleaseInfo,
+} from "./npm-global-cli.js";
+import { OFFICIAL_DISTRIBUTION, type DistributionConfig } from "@getpaseo/protocol/distribution";
 
 interface CommandCall {
   command: string;
@@ -145,5 +152,146 @@ describe("DefaultNpmGlobalPaseoCli", () => {
     await expect(cli.inspect()).rejects.toThrow(
       "@getpaseo/cli is not installed with npm -g on this host",
     );
+  });
+});
+
+const OWN_CHANNEL: DistributionConfig = {
+  githubOwner: "pocharlies-org",
+  githubRepo: "paseo",
+  npmCliPackage: "@pocharlies/cli",
+  npmServerPackage: "@pocharlies/server",
+  npmCliDistTag: "latest",
+};
+
+const FIXTURE_RELEASE = {
+  tag_name: "own-v0.12.1",
+  body: "Distribución propia.\n\nupstream: 0.12.0\n",
+  assets: [
+    {
+      name: "pocharlies-cli-0.12.1.tgz",
+      browser_download_url:
+        "https://github.com/pocharlies-org/paseo/releases/download/own-v0.12.1/pocharlies-cli-0.12.1.tgz",
+    },
+    {
+      name: "Paseo-0.12.1.dmg",
+      browser_download_url:
+        "https://github.com/pocharlies-org/paseo/releases/download/own-v0.12.1/Paseo-0.12.1.dmg",
+    },
+  ],
+};
+
+describe("own release channel discovery", () => {
+  test("the official channel is not own; an own package selection is", () => {
+    expect(isOwnReleaseChannel(OFFICIAL_DISTRIBUTION)).toBe(false);
+    expect(isOwnReleaseChannel(OWN_CHANNEL)).toBe(true);
+  });
+
+  test("parseOwnRelease reads version, upstream metadata and the own CLI tarball", () => {
+    const release = parseOwnRelease(FIXTURE_RELEASE, OWN_CHANNEL);
+    expect(release).toEqual({
+      version: "0.12.1",
+      upstreamVersion: "0.12.0",
+      tarballUrl: FIXTURE_RELEASE.assets[0].browser_download_url,
+    });
+  });
+
+  test("parseOwnRelease falls back to the tag for the upstream version", () => {
+    const release = parseOwnRelease(
+      { ...FIXTURE_RELEASE, body: null, tag_name: "v0.12.3-own.1" },
+      OWN_CHANNEL,
+    );
+    expect(release.version).toBe("0.12.3-own.1");
+    expect(release.upstreamVersion).toBe("0.12.3");
+  });
+
+  test("parseOwnRelease fails when the own tarball asset is missing", () => {
+    expect(() => parseOwnRelease({ ...FIXTURE_RELEASE, assets: [] }, OWN_CHANNEL)).toThrow(
+      /no own CLI tarball asset/,
+    );
+  });
+
+  test("resolveLatestOwnRelease queries the own GitHub releases API, never the registry", async () => {
+    const urls: string[] = [];
+    const release = await resolveLatestOwnRelease(OWN_CHANNEL, async (url) => {
+      urls.push(url);
+      return FIXTURE_RELEASE;
+    });
+    expect(urls).toEqual(["https://api.github.com/repos/pocharlies-org/paseo/releases/latest"]);
+    expect(release.version).toBe("0.12.1");
+  });
+
+  test("installLatest on an own channel installs the release tarball, never an npm spec", async () => {
+    const calls: CommandCall[] = [];
+    const downloaded: { url?: string; dest?: string } = {};
+    const cli = new DefaultNpmGlobalPaseoCli(
+      async (command, args, options) => {
+        calls.push({ command, args, timeout: options?.timeout, maxBuffer: options?.maxBuffer });
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      {
+        distribution: OWN_CHANNEL,
+        resolveLatestRelease: async (): Promise<OwnReleaseInfo> =>
+          parseOwnRelease(FIXTURE_RELEASE, OWN_CHANNEL),
+        downloadFile: async (url, dest) => {
+          downloaded.url = url;
+          downloaded.dest = dest;
+        },
+        tempDir: () => "/tmp/paseo-own-test",
+      },
+    );
+
+    await cli.installLatest({ prefix: "/prefix" });
+    expect(downloaded.url).toBe(FIXTURE_RELEASE.assets[0].browser_download_url);
+    expect(calls).toEqual([
+      {
+        command: "npm",
+        args: [
+          "install",
+          "-g",
+          path.join("/tmp/paseo-own-test", "paseo-own-cli-0.12.1.tgz"),
+          "--prefix",
+          "/prefix",
+        ],
+        timeout: 300_000,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    ]);
+    // Nothing here could resolve against the registry: no dist-tag spec was passed.
+    expect(calls[0]!.args).not.toContain("@pocharlies/cli@latest");
+  });
+
+  test("installLatest on the official channel never touches the release API", async () => {
+    let releaseCalls = 0;
+    const calls: CommandCall[] = [];
+    const cli = new DefaultNpmGlobalPaseoCli(
+      async (command, args, options) => {
+        calls.push({ command, args, timeout: options?.timeout, maxBuffer: options?.maxBuffer });
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+      {
+        resolveLatestRelease: async () => {
+          releaseCalls += 1;
+          throw new Error("must not be called");
+        },
+      },
+    );
+
+    await cli.installLatest();
+    expect(releaseCalls).toBe(0);
+    expect(calls[0]!.args).toContain("@getpaseo/cli@latest");
+  });
+
+  test("inspectLatestRelease returns the release metadata for version discovery", async () => {
+    const cli = new DefaultNpmGlobalPaseoCli(
+      async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      {
+        distribution: OWN_CHANNEL,
+        resolveLatestRelease: async () => parseOwnRelease(FIXTURE_RELEASE, OWN_CHANNEL),
+      },
+    );
+    await expect(cli.inspectLatestRelease()).resolves.toMatchObject({
+      version: "0.12.1",
+      upstreamVersion: "0.12.0",
+    });
   });
 });
