@@ -90,7 +90,17 @@ test("own cli tarball installs offline and the daemon resolves the own server", 
       if (resolved.includes("@getpaseo")) {
         throw new Error("resolved the official server: " + resolved);
       }
-      const pkg = JSON.parse(require("node:fs").readFileSync(require.resolve("${OWN_SCOPE}/server/package.json"), "utf8"));
+      // The server package's "exports" does not expose ./package.json, so read it by
+      // walking up from the resolved main entry instead of require.resolve'ing it.
+      const fs = require("node:fs");
+      const pth = require("node:path");
+      let serverRoot = pth.dirname(resolved);
+      while (!fs.existsSync(pth.join(serverRoot, "package.json"))) {
+        const parent = pth.dirname(serverRoot);
+        if (parent === serverRoot) throw new Error("no package.json above " + resolved);
+        serverRoot = parent;
+      }
+      const pkg = JSON.parse(fs.readFileSync(pth.join(serverRoot, "package.json"), "utf8"));
       if (pkg.name !== "${OWN_SCOPE}/server") throw new Error("wrong server package: " + pkg.name);
       process.stdout.write("own-server-ok");
       `,

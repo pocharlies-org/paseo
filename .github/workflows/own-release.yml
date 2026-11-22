@@ -73,9 +73,12 @@ jobs:
             --npm-server-package "$OWN_NPM_SERVER_PACKAGE" \
             --rewrite-packages
 
-      # Relink de workspaces con los nombres propios (el lockfile commiteado es oficial;
-      # no se reescribe: es un checkout de empaquetado desechable).
-      - run: npm install --package-lock=false --no-audit --no-fund
+      # Relink de workspaces con los nombres propios. Sin --package-lock=false: npm debe
+      # resolver contra el lockfile commiteado (con --package-lock=false ignora el lockfile
+      # y re-resuelve rangos, p. ej. react-native-unistyles ^3.2.4 → 3.8.2, y revienta el
+      # peer de react-native). El checkout de empaquetado es desechable: reescribir el
+      # lockfile local no toca el commiteado.
+      - run: npm install --no-audit --no-fund
 
       - name: Build the stack
         run: |

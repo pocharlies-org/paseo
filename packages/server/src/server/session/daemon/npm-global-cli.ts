@@ -7,6 +7,7 @@ import {
   OFFICIAL_DISTRIBUTION,
   type DistributionConfig,
 } from "@getpaseo/protocol/distribution";
+import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { execCommand } from "../../../utils/spawn.js";
@@ -116,7 +117,9 @@ export const defaultDownloadFile: DownloadFile = async (url, destination) => {
   if (!response.ok || !response.body) {
     throw new Error(`Own CLI tarball download failed: HTTP ${response.status} for ${url}`);
   }
-  await pipeline(response.body, createWriteStream(destination));
+  // The fetch ReadableStream type is slightly different from what Readable.fromWeb expects
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await pipeline(Readable.fromWeb(response.body as any), createWriteStream(destination));
 };
 
 const NpmGlobalListSchema = z
