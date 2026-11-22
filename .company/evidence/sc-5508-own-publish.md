@@ -79,3 +79,21 @@ cubierto desde #8 (`composer pill task replacement`, 3 tests) y su suite pasa si
   y el test del tarball de la sección 1. El feed Electron firmado no se toca (default oficial, reescrito en empaquetado).
 - C4 (focalizadas, lint, tipos, barrido): secciones 2 y 3.
 - C5 (release publicada + upgrade real): fuera de esta PR, bloqueada por el material de firma de SC-5871.
+
+## 5. Rework: job `distribution` en rojo (run 45015578670)
+
+- Fallo en CI: `npm run typecheck --workspace=@getpaseo/cli` con TS2307 (`Cannot find module '@getpaseo/server/daemon-control'`,
+  `/agent-activity`, `/configuration`, …) y tres TS18046 derivados en `run.ts`. Los pasos anteriores (vitest, typecheck de app y
+  server) pasaban; `lint` y `format:check` no llegaron a correr.
+- Causa: el `package.json` del server declara el subpath `types` en `dist/…d.ts` y el job solo construía client, plugin y highlight,
+  nunca el server. No era `set-distribution.mjs` ni el tarball: no hay cambio de reglas ni de tests de la regla.
+- Por qué no salía en local: sin `packages/server/dist` en el worktree, tsgo cae al `node_modules` ancestro del checkout principal
+  (`/home/dibanez/src/paseo/node_modules/@getpaseo/server`), que sí tiene `dist`. La traza (`tsgo --traceResolution`) mostró
+  `Failed to resolve under condition 'types'` en el árbol propio y el acierto solo por el ancestro. En CI no hay ancestro.
+- Arreglo: `own-distribution-ci.yml` sustituye `build:client` + `build:plugin` + `build:highlight` por `npm run build:server`
+  (mismo paso que ya usa `own-release.yml` y el job `typecheck` del upstream; incluye client, plugin, highlight, relay, server y cli).
+- Verde en local, en el orden del job, con `build:server` hecho (exit 0 cada uno): vitest `set-distribution` + `pack-own-release`
+  (24 tests), `distribution.test.ts` (4), `buttons/model.test.ts` (7), `npm-global-cli.test.ts` (13); typecheck de app, server y cli;
+  `npm run lint`; `npm run format:check`. Traza posterior: `@getpaseo/server/daemon-control` resuelve a
+  `packages/server/dist/server/server/daemon-instance.d.ts` dentro del propio árbol.
+- `company-duplicados --base real/main --head HEAD`: `Sin duplicación nueva.`
