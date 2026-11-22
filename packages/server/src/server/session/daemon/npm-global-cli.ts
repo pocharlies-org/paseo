@@ -31,7 +31,7 @@ const RELEASE_PROBE_TIMEOUT_MS = 15_000;
 
 // The tarball asset pack-own-release.mjs publishes for the own CLI (npm names scoped
 // packages as <scope-without-@>-<name>-<version>.tgz).
-export function ownCliTarballAssetName(config: DistributionConfig = DISTRIBUTION): string {
+function ownCliTarballAssetName(config: DistributionConfig = DISTRIBUTION): string {
   return `${config.npmCliPackage.slice(1).replace("/", "-")}-`;
 }
 
@@ -67,7 +67,7 @@ export interface OwnReleaseInfo {
 
 export type FetchJson = (url: string) => Promise<unknown>;
 
-export const defaultFetchJson: FetchJson = async (url) => {
+const defaultFetchJson: FetchJson = async (url) => {
   const response = await fetch(url, {
     headers: { accept: "application/vnd.github+json", "user-agent": "paseo-daemon" },
     signal: AbortSignal.timeout(RELEASE_PROBE_TIMEOUT_MS),
@@ -109,7 +109,7 @@ export async function resolveLatestOwnRelease(
 
 export type DownloadFile = (url: string, destination: string) => Promise<void>;
 
-export const defaultDownloadFile: DownloadFile = async (url, destination) => {
+const defaultDownloadFile: DownloadFile = async (url, destination) => {
   const response = await fetch(url, {
     headers: { "user-agent": "paseo-daemon" },
     signal: AbortSignal.timeout(NPM_INSTALL_TIMEOUT_MS),

@@ -117,4 +117,6 @@ test("own cli tarball installs offline and the daemon resolves the own server", 
   } finally {
     rmSync(prefix, { recursive: true, force: true });
   }
-});
+  // The body is synchronous (execFileSync): installing the ~85 MB of tarballs takes over
+  // a minute, and vitest's default 5 s timeout would flag a correct run as failed.
+}, 300_000);
