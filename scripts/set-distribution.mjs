@@ -21,17 +21,18 @@
 //               @getpaseo/cli@latest is not a coherent own channel, so we fail before
 //               writing anything rather than ship a half-own build.
 //
-// BLOCKER (deliberately not solved here, not worked around with a partial hack):
-//   Producing the own npm package that --own points at is not a one-line change. Every
-//   package in this monorepo is @getpaseo/* and every cross-package dependency, the
-//   desktop's deps, the server package name the install-origin check reads, and the app's
-//   imports all name that scope. Publishing @pocharlies/cli + @pocharlies/server means
-//   renaming and republishing the whole monorepo (full-monorepo packaging), out of scope
-//   for this minimal change. The alternative — keeping the @getpaseo/* names and pulling
-//   them from a private registry — is NOT wired into the install path either: the npm
-//   install/inspect commands do not pass a --registry today, so there is no coherent
-//   private-registry channel to select. Until one of those exists, --own can only be used
-//   once a real own package name is available; it will not pretend otherwise.
+// Own npm channel (SC-5508, resolves the earlier blocker): --own with --rewrite-packages
+// renames the four packages the own CLI tarball needs (cli/server/client/protocol) to the
+// own scope derived from --npm-cli-package, rewrites their cross-package import
+// specifiers (the CLI publishes tsc output unbundled, so "@getpaseo/server/..." would be
+// ERR_MODULE_NOT_FOUND in an own install), rewrites the dependency keys and workspace
+// script selectors that name those packages, and marks the own server/client/protocol as
+// bundleDependencies of the CLI. scripts/pack-own-release.mjs then assembles the full
+// production closure into the CLI's node_modules so `npm install -g <own-cli.tgz>` never
+// resolves against the public registry. Packages outside the four (highlight, plugin,
+// relay) keep their names: they ride inside the bundled closure unchanged. The official
+// defaults stay committed; --official restores the marker-rewritten files exactly, and a
+// packaging checkout is disposable (git restores the names).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -91,10 +92,15 @@ export function resolveConfig(argv) {
   let mode = "official";
   let sawOfficial = false;
   let sawOwn = false;
+  let rewritePackages = false;
   const overrides = {};
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "--rewrite-packages") {
+      rewritePackages = true;
+      continue;
+    }
     if (arg === "--official") {
       if (sawOwn) throw new Error("--official and --own are mutually exclusive");
       sawOfficial = true;
@@ -125,10 +131,12 @@ export function resolveConfig(argv) {
 
   if (mode === "own") {
     assertOwnNpmChannel(config);
+  } else if (rewritePackages) {
+    throw new Error("--rewrite-packages requires --own (fail-closed: never rename to official)");
   }
 
   validateConfig(config);
-  return { mode, config };
+  return { mode, config, rewritePackages };
 }
 
 // Fail-closed: an own channel must point at its own npm packages. Missing or official
@@ -223,9 +231,151 @@ export function rewriteElectronBuilderPublish(source, config) {
   return out.join("\n");
 }
 
+// The four packages the own CLI tarball renames to the own scope. Everything else
+// (highlight, plugin, relay, app, desktop) keeps its committed name: it either rides
+// inside the bundled closure or is not part of the npm install path.
+export const OWN_RENAMED_OFFICIAL_NAMES = [
+  "@getpaseo/cli",
+  "@getpaseo/server",
+  "@getpaseo/client",
+  "@getpaseo/protocol",
+];
+
+// Derive the own names from the fail-closed explicit CLI/server packages. Both must be
+// scoped and share one scope, so client/protocol derive from it deterministically.
+export function ownPackageNames(config) {
+  const scopeOf = (pkg, flag) => {
+    const match = /^(@[^/]+)\/[^/]+$/.exec(pkg ?? "");
+    if (!match) {
+      throw new Error(`--own ${flag} must be a scoped package (got "${pkg}")`);
+    }
+    return match[1];
+  };
+  const cliScope = scopeOf(config.npmCliPackage, "npm-cli-package");
+  const serverScope = scopeOf(config.npmServerPackage, "npm-server-package");
+  if (cliScope !== serverScope) {
+    throw new Error(
+      `--own npm-cli-package and --npm-server-package must share one scope (got ${cliScope} and ${serverScope})`,
+    );
+  }
+  return {
+    "@getpaseo/cli": config.npmCliPackage,
+    "@getpaseo/server": config.npmServerPackage,
+    "@getpaseo/client": `${cliScope}/client`,
+    "@getpaseo/protocol": `${cliScope}/protocol`,
+  };
+}
+
+// package.json text: rename targets wherever the token appears — the "name" field,
+// dependency keys, and workspace script selectors like --workspace=@getpaseo/server.
+export function rewritePackageJsonNames(source, names) {
+  let out = source;
+  for (const [official, own] of Object.entries(names)) {
+    const escaped = official.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Subpath references ("@getpaseo/server/daemon-control" in script strings).
+    out = out.replaceAll(`${official}/`, `${own}/`);
+    // Whole-token references: "name" fields, dependency keys, and bare script selectors
+    // ("--workspace=@getpaseo/server").
+    out = out.replace(new RegExp(`${escaped}(?![\\w./-])`, "g"), own);
+  }
+  return out;
+}
+
+// Source text: rewrite only module specifiers in import/export-from/require contexts,
+// never data strings (the committed OFFICIAL_DISTRIBUTION literals must stay official).
+export function rewriteImportSpecifiers(source, names) {
+  const alternation = Object.keys(names)
+    .map((official) => official.replace("/", "\\/"))
+    .join("|");
+  const pattern = new RegExp(
+    `(\\b(?:require\\.resolve|require|import|from)\\s*\\(?\\s*)(["'])(${alternation})((?:\\/[^"']*)?)\\2`,
+    "g",
+  );
+  return source.replace(pattern, (match, prefix, quote, official, subpath) => {
+    return `${prefix}${quote}${names[official]}${subpath}${quote}`;
+  });
+}
+
+// The CLI tarball is self-contained: npm packs (and the installer extracts without any
+// registry resolution) every package listed in bundleDependencies that sits in its
+// node_modules. Mark the own server/client/protocol here; pack-own-release.mjs extends the
+// list to the full production closure.
+export function markCliBundleDependencies(cliPackageJsonSource, names) {
+  const pkg = JSON.parse(cliPackageJsonSource);
+  pkg.bundleDependencies = [
+    names["@getpaseo/server"],
+    names["@getpaseo/client"],
+    names["@getpaseo/protocol"],
+  ];
+  return `${JSON.stringify(pkg, null, 2)}\n`;
+}
+
+const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".js", ".mjs", ".cjs"]);
+const SKIP_DIRS = new Set(["node_modules", "dist", ".git", "coverage", "build", ".next"]);
+
+function* walkFiles(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (!SKIP_DIRS.has(entry.name)) yield* walkFiles(path.join(dir, entry.name));
+    } else if (entry.isFile()) {
+      yield path.join(dir, entry.name);
+    }
+  }
+}
+
+// Rewrite every package.json (name/dep keys/script tokens) and every source file
+// (import specifiers) under repoRoot. Deterministic and idempotent.
+export function applyOwnPackageRewrites(repoRoot, config) {
+  const names = ownPackageNames(config);
+  // The root package.json holds the workspace script selectors
+  // ("npm run build --workspace=@getpaseo/server"), so it is rewritten too.
+  const targets = [path.join(repoRoot, "package.json")];
+  const roots = [
+    path.join(repoRoot, "packages"),
+    path.join(repoRoot, "scripts"),
+    path.join(repoRoot, "plugins"),
+  ];
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    for (const file of walkFiles(root)) {
+      const base = path.basename(file);
+      const ext = path.extname(file);
+      const isPackageJson = base === "package.json";
+      if (!isPackageJson && !SOURCE_EXTENSIONS.has(ext)) continue;
+      targets.push(file);
+    }
+  }
+  const changed = [];
+  for (const file of targets) {
+    if (!fs.existsSync(file)) continue;
+    const isPackageJson = path.basename(file) === "package.json";
+    const before = fs.readFileSync(file, "utf8");
+    const after = isPackageJson
+      ? rewritePackageJsonNames(before, names)
+      : rewriteImportSpecifiers(before, names);
+    if (after !== before) {
+      fs.writeFileSync(file, after);
+      changed.push(file);
+    }
+  }
+  const cliJsonPath = path.join(repoRoot, "packages", "cli", "package.json");
+  const cliBefore = fs.readFileSync(cliJsonPath, "utf8");
+  const cliAfter = markCliBundleDependencies(cliBefore, names);
+  if (cliAfter !== cliBefore) {
+    fs.writeFileSync(cliJsonPath, cliAfter);
+    if (!changed.includes(cliJsonPath)) changed.push(cliJsonPath);
+  }
+  return changed;
+}
+
 export function applyDistribution(
   config,
-  { distributionPath = DISTRIBUTION_FILE, builderPath = ELECTRON_BUILDER_FILE } = {},
+  {
+    distributionPath = DISTRIBUTION_FILE,
+    builderPath = ELECTRON_BUILDER_FILE,
+    repoRoot = null,
+    rewritePackages = false,
+  } = {},
 ) {
   fs.writeFileSync(
     distributionPath,
@@ -235,28 +385,37 @@ export function applyDistribution(
     builderPath,
     rewriteElectronBuilderPublish(fs.readFileSync(builderPath, "utf8"), config),
   );
+  if (rewritePackages) {
+    if (config.npmCliPackage === OFFICIAL_DISTRIBUTION.npmCliPackage) {
+      throw new Error("--rewrite-packages is only valid with an own npm package (fail-closed)");
+    }
+    return applyOwnPackageRewrites(repoRoot ?? REPO_ROOT, config);
+  }
+  return [];
 }
 
 // Full CLI flow: resolve (and validate, fail-closed) BEFORE touching any file.
 export function run(argv, paths) {
-  const { mode, config } = resolveConfig(argv);
-  applyDistribution(config, paths);
-  return { mode, config };
+  const { mode, config, rewritePackages } = resolveConfig(argv);
+  const changed = applyDistribution(config, { ...paths, rewritePackages });
+  return { mode, config, changed };
 }
 
 function usageAndExit(code) {
   process.stderr.write(
     "Usage: node scripts/set-distribution.mjs [--official | --own] " +
       "(--own also requires --npm-cli-package and --npm-server-package) " +
+      "[--rewrite-packages] " +
       "[--github-owner <o>] [--github-repo <r>] [--npm-cli-dist-tag <tag>]\n",
   );
   process.exit(code);
 }
 
 if (isMainModule(import.meta.url)) {
-  const { mode, config } = run(process.argv.slice(2));
+  const { mode, config, changed } = run(process.argv.slice(2));
+  const packagesNote = changed.length > 0 ? `, ${changed.length} package files rewritten` : "";
   process.stdout.write(
     `Distribution set to ${mode}: github ${config.githubOwner}/${config.githubRepo}, ` +
-      `npm ${config.npmCliPackage}@${config.npmCliDistTag}\n`,
+      `npm ${config.npmCliPackage}@${config.npmCliDistTag}${packagesNote}\n`,
   );
 }

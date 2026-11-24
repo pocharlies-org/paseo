@@ -1,0 +1,117 @@
+name: Own Release
+
+# Publicación del canal propio del fork (SC-5508): tarballs autocontenidos del CLI y del
+# server en releases de GitHub. NO bloqueada por la firma: esto no toca el canal de
+# escritorio. Los jobs de release de ESCRITORIO (desktop-release.yml / desktop-packages.yml)
+# siguen condicionados a github.repository == 'getpaseo/paseo' (INFRA-1218) y al material de
+# firma de SC-5871; no se activan aquí.
+#
+# La nota de la release lleva el metadato `upstream: X.Y.Z` que lee update-watch
+# (dgx-infra, entrada paseo): es la base de comparación del detector.
+#
+# Runner: arc-k8s (el del fork; ubuntu-latest de GitHub no está habilitado aquí). Los
+# deps nativas se empaquetan para la arquitectura del runner: el runner debe coincidir
+# con la del host destino (atlantic, amd64).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag de la release propia (p. ej. own-v0.12.1)"
+        required: true
+        type: string
+      upstream:
+        description: "Versión upstream incorporada (X.Y.Z), va a la nota de la release"
+        required: true
+        type: string
+      publish:
+        description: "Publicar la release (false = solo construir y validar los tarballs)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+concurrency:
+  group: own-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-own-packages:
+    if: github.repository == 'pocharlies-org/paseo'
+    runs-on: arc-k8s
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      OWN_NPM_CLI_PACKAGE: "@pocharlies/cli"
+      OWN_NPM_SERVER_PACKAGE: "@pocharlies/server"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Validate upstream metadata
+        run: |
+          if ! printf '%s' "${{ inputs.upstream }}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::upstream must be X.Y.Z (update-watch parses it from the release notes)"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      # Canal propio: DISTRIBUTION + publish + renombrado al scope propio de
+      # cli/server/client/protocol (imports, deps, bundleDependencies). Fail-closed.
+      - name: Set own distribution
+        run: |
+          node scripts/set-distribution.mjs --own \
+            --npm-cli-package "$OWN_NPM_CLI_PACKAGE" \
+            --npm-server-package "$OWN_NPM_SERVER_PACKAGE" \
+            --rewrite-packages
+
+      # Relink de workspaces con los nombres propios. Sin --package-lock=false: npm debe
+      # resolver contra el lockfile commiteado (con --package-lock=false ignora el lockfile
+      # y re-resuelve rangos, p. ej. react-native-unistyles ^3.2.4 → 3.8.2, y revienta el
+      # peer de react-native). El checkout de empaquetado es desechable: reescribir el
+      # lockfile local no toca el commiteado.
+      - run: npm install --no-audit --no-fund
+
+      - name: Build the stack
+        run: |
+          npm run build:server
+          npm run build:daemon-web-ui
+
+      - name: Pack self-contained own tarballs
+        run: node scripts/pack-own-release.mjs --out dist/own
+
+      # El test del tarball autocontenido: install -g en un prefix aislado sin acceso al
+      # registro; el daemon resuelve el server propio, no @getpaseo/server.
+      - name: Test own tarball installs offline
+        run: |
+          cli="$(ls dist/own/pocharlies-cli-*.tgz | head -n1)"
+          server="$(ls dist/own/pocharlies-server-*.tgz | head -n1)"
+          [ -n "$cli" ] && [ -n "$server" ] || { echo "no own tarballs produced"; exit 1; }
+          PASEO_OWN_CLI_TGZ="$PWD/$cli" PASEO_OWN_SERVER_TGZ="$PWD/$server" \
+            npx vitest run scripts/own-cli-tarball.test.mjs --bail=1
+
+      - name: Create or update the GitHub release
+        if: inputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notes="Distribución propia del fork (SC-5508). Tarballs autocontenidos del CLI y del server: npm install -g sin resolver contra el registro público.
+
+          upstream: ${{ inputs.upstream }}"
+          if gh release view "${{ inputs.tag }}" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            gh release edit "${{ inputs.tag }}" --repo "${{ github.repository }}" --notes "$notes"
+            gh release upload "${{ inputs.tag }}" dist/own/*.tgz --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "${{ inputs.tag }}" dist/own/*.tgz \
+              --repo "${{ github.repository }}" \
+              --title "Paseo own ${{ inputs.tag }}" \
+              --notes "$notes"
+          fi

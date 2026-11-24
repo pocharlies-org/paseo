@@ -8,6 +8,7 @@ import {
   type NodeEntrypointInvocation,
   type NodeEntrypointSpec,
 } from "./node-entrypoint-launcher.js";
+import { DISTRIBUTION } from "@getpaseo/protocol/distribution";
 import {
   assertPathExists,
   findPackageRootFromResolvedPath,
@@ -15,7 +16,7 @@ import {
   type PackageInfo,
 } from "./package-paths.js";
 
-const SERVER_PACKAGE_NAME = "@getpaseo/server";
+const SERVER_PACKAGE_NAME = DISTRIBUTION.npmServerPackage;
 
 const esmRequire = createRequire(__filename);
 

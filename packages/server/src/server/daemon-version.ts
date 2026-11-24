@@ -1,6 +1,9 @@
+import { DISTRIBUTION } from "@getpaseo/protocol/distribution";
 import { PackageVersionResolutionError, resolvePackageVersion } from "./package-version.js";
 
-const SERVER_PACKAGE_NAME = "@getpaseo/server";
+// The same configured package install-origin and local-daemon resolve; never a literal,
+// so an own build reports its own version instead of failing to find the official name.
+const SERVER_PACKAGE_NAME = DISTRIBUTION.npmServerPackage;
 
 export class DaemonVersionResolutionError extends PackageVersionResolutionError {}
 
