@@ -80,7 +80,12 @@ jobs:
       # lockfile local no toca el commiteado.
       - run: npm install --no-audit --no-fund
 
+      # `expo export --platform web` revienta el heap por defecto de Node (~2 GB) al llegar al
+      # validador ws-outbound.aot.js (run 45546783092, "JavaScript heap out of memory"). Mismo
+      # remedio que desktop-release.yml; el pod arc-k8s tiene 8Gi de límite.
       - name: Build the stack
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
         run: |
           npm run build:server
           npm run build:daemon-web-ui
