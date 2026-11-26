@@ -2445,6 +2445,7 @@ function ComposerContentImpl({
                   submitIcon={submitIcon}
                   isSubmitDisabled={isSubmitDisabled}
                   isSubmitLoading={isSubmitLoadingVisible}
+                  isSendInFlight={isProcessing || isSubmitLoading}
                   preserveHeightOnSubmit={submitBehavior === "preserve-and-lock"}
                   attachments={selectedAttachments}
                   cwd={cwd}
