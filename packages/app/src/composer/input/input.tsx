@@ -56,7 +56,6 @@ import { useIosHardwareKeyboardSubmit } from "@/hooks/use-ios-hardware-keyboard-
 import { formatShortcut, type ShortcutKey } from "@/utils/format-shortcut";
 import { getShortcutOs } from "@/utils/shortcut-platform";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
-import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
@@ -83,6 +82,7 @@ import {
 import {
   applyDictationTranscript,
   computeCanStartDictation,
+  handleDesktopKeyPressImpl,
   resolveComposerSurfacePresentation,
   resolveComposerSurfaceText,
   resolveRetainedSelection,
@@ -131,6 +131,9 @@ export interface MessageInputProps {
   submitIcon?: "arrow" | "return";
   isSubmitDisabled?: boolean;
   isSubmitLoading?: boolean;
+  /** The previous send is still in flight (daemon round-trip). Enter queues the next
+   *  message instead of being swallowed while the agent's running state arrives. */
+  isSendInFlight?: boolean;
   /** When true, keep the grown input height after submit (text is preserved, not cleared). */
   preserveHeightOnSubmit?: boolean;
   attachments: ComposerAttachment[];
@@ -390,52 +393,6 @@ function SendButtonContent({
     return <ThemedCornerDownLeft size={buttonIconSize} uniProps={iconAccentForegroundMapping} />;
   }
   return <ThemedArrowUp size={buttonIconSize} uniProps={iconAccentForegroundMapping} />;
-}
-
-interface DesktopKeyPressContext {
-  onKeyPressCallback: ((event: ComposerKeyPressEvent) => boolean) | undefined;
-  input: ComposerKeyPressEvent["input"];
-  submitOnEnter: boolean;
-  isAgentRunning: boolean;
-  onQueue: ((payload: MessagePayload) => void) | undefined;
-  isSubmitDisabled: boolean;
-  isSubmitLoading: boolean;
-  disabled: boolean;
-  handleAlternateSendAction: () => void;
-  handleDefaultSendAction: () => void;
-}
-
-function handleDesktopKeyPressImpl(
-  event: WebTextInputKeyPressEvent,
-  ctx: DesktopKeyPressContext,
-): void {
-  if (isImeComposingKeyboardEvent(event.nativeEvent)) return;
-
-  if (ctx.onKeyPressCallback) {
-    const handled = ctx.onKeyPressCallback({
-      key: event.nativeEvent.key,
-      preventDefault: () => event.preventDefault(),
-      input: ctx.input,
-    });
-    if (handled) return;
-  }
-
-  const { shiftKey, metaKey, ctrlKey } = event.nativeEvent;
-
-  if (event.nativeEvent.key !== "Enter") return;
-  if (!ctx.submitOnEnter) return;
-  if (shiftKey) return;
-
-  if ((metaKey || ctrlKey) && ctx.isAgentRunning && ctx.onQueue) {
-    if (ctx.isSubmitDisabled || ctx.isSubmitLoading || ctx.disabled) return;
-    event.preventDefault();
-    ctx.handleAlternateSendAction();
-    return;
-  }
-
-  if (ctx.isSubmitDisabled || ctx.isSubmitLoading || ctx.disabled) return;
-  event.preventDefault();
-  ctx.handleDefaultSendAction();
 }
 
 function getTextInputNativeElement(current: ComposerTextInputHandle | null): HTMLElement | null {
@@ -1083,6 +1040,7 @@ interface ResolvedMessageInputProps {
   submitIcon: "arrow" | "return";
   isSubmitDisabled: boolean;
   isSubmitLoading: boolean;
+  isSendInFlight: boolean;
   preserveHeightOnSubmit: boolean;
   attachments: ComposerAttachment[];
   cwd: string;
@@ -1130,6 +1088,7 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     submitIcon: props.submitIcon ?? "arrow",
     isSubmitDisabled: props.isSubmitDisabled ?? false,
     isSubmitLoading: props.isSubmitLoading ?? false,
+    isSendInFlight: props.isSendInFlight ?? false,
     preserveHeightOnSubmit: props.preserveHeightOnSubmit ?? false,
     attachments: props.attachments,
     cwd: props.cwd,
@@ -1207,6 +1166,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       submitIcon,
       isSubmitDisabled,
       isSubmitLoading,
+      isSendInFlight,
       preserveHeightOnSubmit,
       attachments,
       cwd,
@@ -1733,9 +1693,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           onQueue,
           isSubmitDisabled,
           isSubmitLoading,
+          isSendInFlight,
           disabled,
           handleAlternateSendAction,
           handleDefaultSendAction,
+          handleQueueMessage,
         });
       },
       [
@@ -1746,9 +1708,11 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         onQueue,
         isSubmitDisabled,
         isSubmitLoading,
+        isSendInFlight,
         disabled,
         handleAlternateSendAction,
         handleDefaultSendAction,
+        handleQueueMessage,
       ],
     );
 

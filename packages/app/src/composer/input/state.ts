@@ -2,6 +2,8 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 import type { MessagePayload, TextReplacement } from "@/composer/types";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
+import type { ComposerKeyPressEvent } from "./input";
+import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 
 export type SendBehavior = ActiveTurnBehavior | "queue";
 
@@ -133,6 +135,78 @@ export function runAlternateSendAction(ctx: SendActionContext): void {
   if (ctx.isAgentRunning && ctx.onQueue) {
     ctx.handleQueueMessage();
   }
+}
+
+export interface DesktopEnterKeyEvent {
+  nativeEvent: {
+    key: string;
+    shiftKey?: boolean;
+    metaKey?: boolean;
+    ctrlKey?: boolean;
+    isComposing?: boolean;
+    keyCode?: number;
+  };
+  preventDefault(): void;
+}
+
+export interface DesktopKeyPressContext {
+  onKeyPressCallback: ((event: ComposerKeyPressEvent) => boolean) | undefined;
+  input: ComposerKeyPressEvent["input"];
+  submitOnEnter: boolean;
+  isAgentRunning: boolean;
+  onQueue: ((payload: MessagePayload) => void) | undefined;
+  isSubmitDisabled: boolean;
+  isSubmitLoading: boolean;
+  isSendInFlight: boolean;
+  disabled: boolean;
+  handleAlternateSendAction: () => void;
+  handleDefaultSendAction: () => void;
+  handleQueueMessage: () => void;
+}
+
+function canQueueWhileSendInFlight(ctx: DesktopKeyPressContext): boolean {
+  return ctx.isSendInFlight && !ctx.isSubmitDisabled && !ctx.disabled && ctx.onQueue !== undefined;
+}
+
+export function handleDesktopKeyPressImpl(
+  event: DesktopEnterKeyEvent,
+  ctx: DesktopKeyPressContext,
+): void {
+  if (isImeComposingKeyboardEvent(event.nativeEvent)) return;
+
+  if (ctx.onKeyPressCallback) {
+    const handled = ctx.onKeyPressCallback({
+      key: event.nativeEvent.key,
+      preventDefault: () => event.preventDefault(),
+      input: ctx.input,
+    });
+    if (handled) return;
+  }
+
+  const { shiftKey, metaKey, ctrlKey } = event.nativeEvent;
+
+  if (event.nativeEvent.key !== "Enter") return;
+  if (!ctx.submitOnEnter) return;
+  if (shiftKey) return;
+
+  if ((metaKey || ctrlKey) && ctx.isAgentRunning && ctx.onQueue) {
+    if (ctx.isSubmitDisabled || ctx.isSubmitLoading || ctx.disabled) return;
+    event.preventDefault();
+    ctx.handleAlternateSendAction();
+    return;
+  }
+
+  if (ctx.isSubmitDisabled || ctx.isSubmitLoading || ctx.disabled) {
+    // The send button is in its loading state only because the previous send has not been
+    // acknowledged yet; queue the next message behind it instead of swallowing Enter.
+    if (canQueueWhileSendInFlight(ctx)) {
+      event.preventDefault();
+      ctx.handleQueueMessage();
+    }
+    return;
+  }
+  event.preventDefault();
+  ctx.handleDefaultSendAction();
 }
 
 export function runMessageInputKeyboardAction(

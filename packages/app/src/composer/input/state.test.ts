@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyDictationTranscript,
   computeCanStartDictation,
+  handleDesktopKeyPressImpl,
   resolveActiveSendBehavior,
   resolveComposerSurfacePresentation,
   resolveComposerSurfaceText,
@@ -360,5 +361,66 @@ describe("fullscreen glyph rail", () => {
     expect(
       resolveGlyphRailOffset({ controlSize: 28, sendIconSize: 20, glyphIconSize: 16 }),
     ).toBeCloseTo(1 / 6);
+  });
+});
+
+function enterEvent() {
+  return {
+    nativeEvent: { key: "Enter", shiftKey: false, metaKey: false, ctrlKey: false },
+    preventDefault: vi.fn(),
+  };
+}
+
+function makeKeyPressCtx(overrides: Record<string, unknown> = {}) {
+  return {
+    onKeyPressCallback: undefined,
+    input: { text: "siguiente", selection: { start: 9, end: 9 } },
+    submitOnEnter: true,
+    isAgentRunning: false,
+    onQueue: vi.fn(),
+    isSubmitDisabled: false,
+    isSubmitLoading: false,
+    isSendInFlight: false,
+    disabled: false,
+    handleAlternateSendAction: vi.fn(),
+    handleDefaultSendAction: vi.fn(),
+    handleQueueMessage: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe("handleDesktopKeyPressImpl Enter while a send is in flight", () => {
+  it("queues the next message instead of swallowing Enter", () => {
+    const ctx = makeKeyPressCtx({ isSubmitLoading: true, isSendInFlight: true });
+    const event = enterEvent();
+    handleDesktopKeyPressImpl(event, ctx);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(ctx.handleQueueMessage).toHaveBeenCalled();
+    expect(ctx.handleDefaultSendAction).not.toHaveBeenCalled();
+  });
+
+  it("still swallows Enter when the loading state is not an in-flight send", () => {
+    const ctx = makeKeyPressCtx({ isSubmitLoading: true });
+    const event = enterEvent();
+    handleDesktopKeyPressImpl(event, ctx);
+    expect(ctx.handleQueueMessage).not.toHaveBeenCalled();
+    expect(ctx.handleDefaultSendAction).not.toHaveBeenCalled();
+  });
+
+  it("still swallows Enter when disconnected even with a send in flight", () => {
+    const ctx = makeKeyPressCtx({
+      isSubmitLoading: true,
+      isSendInFlight: true,
+      isSubmitDisabled: true,
+    });
+    handleDesktopKeyPressImpl(enterEvent(), ctx);
+    expect(ctx.handleQueueMessage).not.toHaveBeenCalled();
+  });
+
+  it("sends normally when nothing is in flight", () => {
+    const ctx = makeKeyPressCtx();
+    handleDesktopKeyPressImpl(enterEvent(), ctx);
+    expect(ctx.handleDefaultSendAction).toHaveBeenCalled();
+    expect(ctx.handleQueueMessage).not.toHaveBeenCalled();
   });
 });
