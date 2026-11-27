@@ -162,8 +162,8 @@ function SchedulesScreenContent(): ReactElement {
           setFetchedAgentsByKey((prev) => {
             const next = new Map(prev);
             next.set(key, {
-              title: agent.title ?? null,
-              provider: agent.provider ?? null,
+              title: agent.title,
+              provider: agent.provider,
               cwd: agent.cwd,
               archivedAt: agent.archivedAt ? new Date(agent.archivedAt) : null,
             });
