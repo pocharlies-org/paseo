@@ -1,9 +1,10 @@
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
-import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { Text, type View, type PressableStateCallbackType } from "react-native";
 import { ChevronDown, Folder } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import { Combobox } from "@/components/ui/combobox";
+import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import type { ScheduleWorkspaceOption } from "@/schedules/schedule-project-targets";
 
 const ThemedFolder = withUnistyles(Folder);
@@ -52,41 +53,40 @@ export function WorkspaceFilter({
     [],
   );
 
+  // Combobox renders `children` as the dropdown body, never as the trigger:
+  // the trigger is a sibling (same shape as HostPicker).
   return (
-    <Combobox
-      options={[{ id: ALL_WORKSPACES_OPTION_ID, label: "All workspaces" }, ...options]}
-      value={selected}
-      onSelect={handleSelect}
-      searchable={false}
-      title="Filter by workspace"
-      open={isOpen}
-      onOpenChange={setIsOpen}
-      anchorRef={anchorRef}
-      desktopPlacement="bottom-start"
-    >
-      <View ref={anchorRef} collapsable={false} style={styles.filterTriggerWrap}>
-        <Pressable
-          onPress={handleOpen}
-          style={triggerStyle}
-          testID={triggerTestID}
-          accessibilityRole="button"
-          accessibilityLabel={`Filter: ${selectedLabel}`}
-        >
-          <ThemedFolder size={14} uniProps={mutedColorMapping} />
-          <Text style={styles.filterTriggerText} numberOfLines={1}>
-            {selectedLabel}
-          </Text>
-          <ThemedChevronDown size={14} uniProps={mutedColorMapping} />
-        </Pressable>
-      </View>
-    </Combobox>
+    <>
+      <ComboboxTrigger
+        ref={anchorRef}
+        onPress={handleOpen}
+        style={triggerStyle}
+        testID={triggerTestID}
+        accessibilityRole="button"
+        accessibilityLabel={`Filter: ${selectedLabel}`}
+      >
+        <ThemedFolder size={14} uniProps={mutedColorMapping} />
+        <Text style={styles.filterTriggerText} numberOfLines={1}>
+          {selectedLabel}
+        </Text>
+        <ThemedChevronDown size={14} uniProps={mutedColorMapping} />
+      </ComboboxTrigger>
+      <Combobox
+        options={[{ id: ALL_WORKSPACES_OPTION_ID, label: "All workspaces" }, ...options]}
+        value={selected}
+        onSelect={handleSelect}
+        searchable={false}
+        title="Filter by workspace"
+        open={isOpen}
+        onOpenChange={setIsOpen}
+        anchorRef={anchorRef}
+        desktopPlacement="bottom-start"
+      />
+    </>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
-  filterTriggerWrap: {
-    alignSelf: "flex-start",
-  },
   filterTrigger: {
     flexDirection: "row",
     alignItems: "center",
