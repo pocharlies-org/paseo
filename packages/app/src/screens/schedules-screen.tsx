@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactElement,
@@ -115,7 +116,7 @@ function SchedulesScreenContent(): ReactElement {
   }, []);
   const closeForm = useCallback(() => setForm({ mode: "closed" }), []);
 
-  const agentsByKey = useMemo(() => {
+  const directoryAgentsByKey = useMemo(() => {
     const map = new Map<string, ScheduleTargetAgent>();
     for (const agent of agents) {
       map.set(`${agent.serverId}:${agent.id}`, {
@@ -127,6 +128,60 @@ function SchedulesScreenContent(): ReactElement {
     }
     return map;
   }, [agents]);
+
+  // Agents archived before this session never enter the directory (the daemon
+  // only lists active agents there), so their schedules would read "target gone"
+  // instead of "archived". Fetch those few by id and merge them in.
+  const [fetchedAgentsByKey, setFetchedAgentsByKey] = useState<Map<string, ScheduleTargetAgent>>(
+    () => new Map(),
+  );
+  const attemptedAgentKeysRef = useRef<Set<string>>(new Set());
+
+  const missingAgentTargets = useMemo(() => {
+    const missing: Array<{ key: string; serverId: string; agentId: string }> = [];
+    for (const schedule of schedules) {
+      if (schedule.target.type !== "agent") continue;
+      const key = `${schedule.serverId}:${schedule.target.agentId}`;
+      if (directoryAgentsByKey.has(key) || fetchedAgentsByKey.has(key)) continue;
+      if (attemptedAgentKeysRef.current.has(key)) continue;
+      missing.push({ key, serverId: schedule.serverId, agentId: schedule.target.agentId });
+    }
+    return missing;
+  }, [schedules, directoryAgentsByKey, fetchedAgentsByKey]);
+
+  useEffect(() => {
+    for (const { key, serverId, agentId } of missingAgentTargets) {
+      attemptedAgentKeysRef.current.add(key);
+      const client = runtime.getSnapshot(serverId)?.client;
+      if (!client) continue;
+      client
+        .fetchAgent({ agentId })
+        .then((result) => {
+          const agent = result?.agent;
+          if (!agent) return null;
+          setFetchedAgentsByKey((prev) => {
+            const next = new Map(prev);
+            next.set(key, {
+              title: agent.title,
+              provider: agent.provider,
+              cwd: agent.cwd,
+              archivedAt: agent.archivedAt ? new Date(agent.archivedAt) : null,
+            });
+            return next;
+          });
+          return agent;
+        })
+        .catch(() => undefined);
+    }
+  }, [missingAgentTargets, runtime]);
+
+  const agentsByKey = useMemo(() => {
+    const map = new Map(directoryAgentsByKey);
+    for (const [key, agent] of fetchedAgentsByKey) {
+      if (!map.has(key)) map.set(key, agent);
+    }
+    return map;
+  }, [directoryAgentsByKey, fetchedAgentsByKey]);
 
   const projectNameByCwd = useMemo(
     () => buildProjectNameByCwd(buildScheduleProjectTargets(projects)),
@@ -331,20 +386,13 @@ function SchedulesScreenBody({
             />
           ) : null}
           <SegmentedControl
-            size="sm"
             value={statusFilter}
             onValueChange={onStatusFilterChange}
             options={STATUS_FILTER_OPTIONS}
             testID="schedules-status-filter"
           />
         </View>
-        <Button
-          variant="outline"
-          leftIcon={Plus}
-          onPress={onCreate}
-          size="sm"
-          testID="schedules-new"
-        >
+        <Button variant="outline" leftIcon={Plus} onPress={onCreate} testID="schedules-new">
           New schedule
         </Button>
       </View>
