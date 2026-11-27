@@ -4,7 +4,7 @@ import { ChevronDown, Folder } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import { Combobox } from "@/components/ui/combobox";
-import { PressHighlight } from "@/components/ui/press-highlight";
+import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import type { ScheduleWorkspaceOption } from "@/schedules/schedule-project-targets";
 
 const ThemedFolder = withUnistyles(Folder);
@@ -44,19 +44,11 @@ export function WorkspaceFilter({
     [onSelect],
   );
 
+  // Combobox renders `children` as the dropdown body, never as the trigger:
+  // the trigger is a sibling (same shape as HostPicker).
   return (
-    <Combobox
-      options={[{ id: ALL_WORKSPACES_OPTION_ID, label: "All workspaces" }, ...options]}
-      value={selected}
-      onSelect={handleSelect}
-      searchable={false}
-      title="Filter by workspace"
-      open={isOpen}
-      onOpenChange={setIsOpen}
-      anchorRef={anchorRef}
-      desktopPlacement="bottom-start"
-    >
-      <PressHighlight
+    <>
+      <ComboboxTrigger
         ref={anchorRef}
         onPress={handleOpen}
         style={styles.filterTrigger}
@@ -69,8 +61,19 @@ export function WorkspaceFilter({
           {selectedLabel}
         </Text>
         <ThemedChevronDown size={14} uniProps={mutedColorMapping} />
-      </PressHighlight>
-    </Combobox>
+      </ComboboxTrigger>
+      <Combobox
+        options={[{ id: ALL_WORKSPACES_OPTION_ID, label: "All workspaces" }, ...options]}
+        value={selected}
+        onSelect={handleSelect}
+        searchable={false}
+        title="Filter by workspace"
+        open={isOpen}
+        onOpenChange={setIsOpen}
+        anchorRef={anchorRef}
+        desktopPlacement="bottom-start"
+      />
+    </>
   );
 }
 
