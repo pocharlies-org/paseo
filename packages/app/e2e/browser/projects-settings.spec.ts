@@ -46,11 +46,7 @@ import {
 } from "../support/helpers/project-settings";
 import { gotoAppShell } from "../support/helpers/app";
 import { openCompactSettings } from "../support/helpers/settings";
-import {
-  addProjectFlowInput,
-  chooseAddProjectMethod,
-  openAddProjectFlow,
-} from "../support/helpers/add-project-flow";
+import { addProjectFlowInput, openAddProjectFlow } from "../support/helpers/add-project-flow";
 import { createTempGitRepo } from "../support/helpers/workspace";
 import {
   buildOpenProjectRoute,
@@ -167,7 +163,6 @@ async function readProjectConfigFile(project: ProjectsSettingsProject): Promise<
 
 async function addProjectFromSidebar(page: Page, projectPath: string): Promise<string> {
   await openAddProjectFlow(page);
-  await chooseAddProjectMethod(page, "directory-search");
 
   const input = addProjectFlowInput(page);
   await input.fill(projectPath);
@@ -204,19 +199,26 @@ test.describe("Projects settings", () => {
   }) => {
     const repo = await createTempGitRepo("projects-settings-empty-");
     const client = await connectSeedClient();
-    let projectId: string | null = null;
+    let projectViewKey: string | null = null;
 
     try {
       await gotoAppShell(page);
 
-      projectId = await addProjectFromSidebar(page, repo.path);
-      await openProjectSettingsFromSidebar(page, projectId);
+      projectViewKey = await addProjectFromSidebar(page, repo.path);
+      await openProjectSettingsFromSidebar(page, projectViewKey);
 
       await expectProjectSettingsFormVisible(page);
       await expect(page.getByTestId("project-settings-back-button")).not.toBeVisible();
     } finally {
-      if (projectId) {
-        await client.removeProject(projectId).catch(() => undefined);
+      if (projectViewKey) {
+        const project = (await client.listProjects()).projects.find(
+          (entry) => entry.projectKey === projectViewKey,
+        );
+        expect(project).toBeDefined();
+        await client.removeProject(project!.projectId);
+        expect(
+          (await client.listProjects()).projects.map((entry) => entry.projectKey),
+        ).not.toContain(projectViewKey);
       }
       await client.close().catch(() => undefined);
       await repo.cleanup().catch(() => undefined);

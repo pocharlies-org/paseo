@@ -23,6 +23,8 @@ const INLINE_PAREN_LINE_SUFFIX = /^(.+?)\(([0-9]+)(?:,[0-9]+)?(?:-([0-9]+)(?:,[0
 const INLINE_WORD_LINE_SUFFIX = /^(.+?)\s+lines?\s+([0-9]+)(?:-([0-9]+))?$/i;
 export interface AssistantHrefParseOptions {
   workspaceRoot?: string;
+  /** Authored document links resolve from this directory, independently of the workspace. */
+  relativePathBase?: string;
   /** Authored links identify a file; only inferred text needs filename heuristics. */
   explicitLink?: boolean;
   /**
@@ -258,7 +260,7 @@ export function parseAssistantFileLink(
     return fileUrlTarget;
   }
 
-  const trimmed = value?.trim();
+  const trimmed = normalizeWindowsLinkPath(value?.trim(), options.workspaceRoot);
   if (!trimmed) {
     return null;
   }
@@ -269,7 +271,7 @@ export function parseAssistantFileLink(
 
   const inlinePathTarget = parseAssistantInlinePathLink(trimmed, options);
   if (inlinePathTarget) {
-    return inlinePathTarget;
+    return { ...inlinePathTarget, raw: value };
   }
 
   const windowsTarget = parseWindowsFileLink(trimmed, value, options);
@@ -281,6 +283,7 @@ export function parseAssistantFileLink(
     workspaceRoot: options.workspaceRoot,
     decodeHref: options.decodeHref,
     explicitLink: options.explicitLink,
+    relativePathBase: options.relativePathBase,
   });
   if (relativeTarget) {
     return relativeTarget;
@@ -347,6 +350,14 @@ export function isFileLookingAssistantToken(value: string): boolean {
   return isPlausibleAssistantLocalPath(path);
 }
 
+// A drive-based workspace identifies the target host's path syntax, even when
+// the client runs elsewhere. Preserve the same spelling on POSIX hosts.
+function normalizeWindowsLinkPath(value: string, workspaceRoot?: string): string {
+  return /^[A-Za-z]:[\\/]/.test(workspaceRoot?.trim() ?? "") && /^\/[A-Za-z]:[\\/]/.test(value)
+    ? value.slice(1)
+    : value;
+}
+
 function parseWindowsFileLink(
   trimmed: string,
   raw: string,
@@ -391,6 +402,15 @@ function parseWorkspaceRelativeFileLink(
     return {
       raw: value,
       path: parsed.path,
+      ...parsed.lines,
+    };
+  }
+
+  const documentBase = options.explicitLink && normalizePathInput(options.relativePathBase);
+  if (documentBase) {
+    return {
+      raw: value,
+      path: resolveDocumentRelativePath(parsed.path, documentBase),
       ...parsed.lines,
     };
   }
@@ -636,6 +656,24 @@ function isPlausibleAssistantFileName(fileName: string | undefined): boolean {
 
 function isDomainLikePathSegment(segment: string): boolean {
   return /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(segment);
+}
+
+function resolveDocumentRelativePath(relativePath: string, baseDirectory: string): string {
+  const prefix = baseDirectory.startsWith("/") ? "/" : "";
+  const segments = baseDirectory.split("/").filter(Boolean);
+  for (const segment of relativePath.split("/")) {
+    const last = segments.at(-1) ?? "";
+    if (!segment || segment === ".") continue;
+    if (segment !== "..") {
+      segments.push(segment);
+    } else if (last && last !== "~" && last !== ".." && !/^[A-Za-z]:$/.test(last)) {
+      segments.pop();
+    } else if (!prefix && !/^[A-Za-z]:$/.test(last)) {
+      segments.push("..");
+    }
+  }
+  const resolved = prefix + segments.join("/");
+  return /^[A-Za-z]:$/.test(resolved) ? `${resolved}/` : resolved;
 }
 
 function resolveRelativePathUnderRoot(pathValue: string, workspaceRoot: string): string | null {

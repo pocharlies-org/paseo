@@ -8,4 +8,5 @@ export {
   PluginHeaderButtons,
   useHasPluginComposerPills,
   usePluginReplacesTasks,
+  usePluginWorkspaceMenu,
 } from "./buttons/view";

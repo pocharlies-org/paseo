@@ -1,3 +1,4 @@
+import type { SendShortcut } from "@/hooks/use-settings";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 import type { MessagePayload, TextReplacement } from "@/composer/types";
@@ -127,14 +128,53 @@ export function runDefaultSendAction(ctx: SendActionContext): void {
   ctx.handleSendMessage();
 }
 
+export type AlternateSendAction = "queue" | "send";
+
+/**
+ * What Mod+Enter and a long-press on Send do instead of the default send. Null while
+ * no turn is running, where both fall back to the default send.
+ */
+export function resolveAlternateSendAction(
+  ctx: Pick<SendActionContext, "defaultSendBehavior" | "isAgentRunning" | "onQueue">,
+): AlternateSendAction | null {
+  if (!ctx.isAgentRunning || !ctx.onQueue) return null;
+  return ctx.defaultSendBehavior === "queue" ? "send" : "queue";
+}
+
 export function runAlternateSendAction(ctx: SendActionContext): void {
-  if (ctx.defaultSendBehavior === "queue") {
+  const action = resolveAlternateSendAction(ctx);
+  if (action === "queue") {
+    ctx.handleQueueMessage();
+    return;
+  }
+  if (action === "send") {
     ctx.handleSendMessage();
     return;
   }
-  if (ctx.isAgentRunning && ctx.onQueue) {
-    ctx.handleQueueMessage();
-  }
+  runDefaultSendAction(ctx);
+}
+
+export type MessageInputEnterAction = "alternate-send" | "default-send";
+
+export interface MessageInputEnterContext {
+  submitOnEnter: boolean;
+  sendShortcut: SendShortcut;
+  shiftKey: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  isAgentRunning: boolean;
+  onQueue: ((payload: MessagePayload) => void) | undefined;
+}
+
+export function resolveMessageInputEnterAction(
+  ctx: MessageInputEnterContext,
+): MessageInputEnterAction | null {
+  if (!ctx.submitOnEnter) return null;
+  if (ctx.shiftKey) return null;
+  const hasModifier = ctx.metaKey || ctx.ctrlKey;
+  if (ctx.sendShortcut === "mod-enter") return hasModifier ? "default-send" : null;
+  if (hasModifier && ctx.isAgentRunning && ctx.onQueue) return "alternate-send";
+  return "default-send";
 }
 
 export interface DesktopEnterKeyEvent {
@@ -143,6 +183,7 @@ export interface DesktopEnterKeyEvent {
     shiftKey?: boolean;
     metaKey?: boolean;
     ctrlKey?: boolean;
+    altKey?: boolean;
     isComposing?: boolean;
     keyCode?: number;
   };
@@ -153,6 +194,7 @@ export interface DesktopKeyPressContext {
   onKeyPressCallback: ((event: ComposerKeyPressEvent) => boolean) | undefined;
   input: ComposerKeyPressEvent["input"];
   submitOnEnter: boolean;
+  sendShortcut: SendShortcut;
   isAgentRunning: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   isSubmitDisabled: boolean;
@@ -174,27 +216,30 @@ export function handleDesktopKeyPressImpl(
 ): void {
   if (isImeComposingKeyboardEvent(event.nativeEvent)) return;
 
+  const { shiftKey, metaKey, ctrlKey, altKey } = event.nativeEvent;
+
   if (ctx.onKeyPressCallback) {
     const handled = ctx.onKeyPressCallback({
       key: event.nativeEvent.key,
+      hasModifier: Boolean(shiftKey || metaKey || ctrlKey || altKey),
       preventDefault: () => event.preventDefault(),
       input: ctx.input,
     });
     if (handled) return;
   }
 
-  const { shiftKey, metaKey, ctrlKey } = event.nativeEvent;
-
   if (event.nativeEvent.key !== "Enter") return;
-  if (!ctx.submitOnEnter) return;
-  if (shiftKey) return;
 
-  if ((metaKey || ctrlKey) && ctx.isAgentRunning && ctx.onQueue) {
-    if (ctx.isSubmitDisabled || ctx.isSubmitLoading || ctx.disabled) return;
-    event.preventDefault();
-    ctx.handleAlternateSendAction();
-    return;
-  }
+  const action = resolveMessageInputEnterAction({
+    submitOnEnter: ctx.submitOnEnter,
+    sendShortcut: ctx.sendShortcut,
+    shiftKey: shiftKey ?? false,
+    metaKey: metaKey ?? false,
+    ctrlKey: ctrlKey ?? false,
+    isAgentRunning: ctx.isAgentRunning,
+    onQueue: ctx.onQueue,
+  });
+  if (action === null) return;
 
   if (ctx.isSubmitDisabled || ctx.isSubmitLoading || ctx.disabled) {
     // The send button is in its loading state only because the previous send has not been
@@ -206,6 +251,10 @@ export function handleDesktopKeyPressImpl(
     return;
   }
   event.preventDefault();
+  if (action === "alternate-send") {
+    ctx.handleAlternateSendAction();
+    return;
+  }
   ctx.handleDefaultSendAction();
 }
 
@@ -268,21 +317,16 @@ export async function stopRealtimeVoice(ctx: StopRealtimeVoiceContext): Promise<
 }
 
 /**
- * Offset that aligns a glyph's visible ink with the Send arrow's ink when both sit in
- * equal controls on the same right rail. In Lucide's 24px viewBox ArrowUp ends at
- * x19 while Maximize2/Minimize2 end at x21, so equal boxes leave the fullscreen
- * glyphs visibly past the arrow.
+ * Put the fullscreen glyph's visible right edge on the text rail, letting its
+ * hit area extend into the padding. Both Lucide glyphs reach x21 of 24 and use
+ * the default 2-unit stroke (one viewBox unit beyond the path).
  */
 export function resolveGlyphRailOffset(input: {
   controlSize: number;
-  sendIconSize: number;
   glyphIconSize: number;
 }): number {
-  const arrowInkInset =
-    (input.controlSize - input.sendIconSize) / 2 + (5 * input.sendIconSize) / 24;
-  const glyphInkInset =
-    (input.controlSize - input.glyphIconSize) / 2 + (3 * input.glyphIconSize) / 24;
-  return arrowInkInset - glyphInkInset;
+  const inkInset = (input.controlSize - input.glyphIconSize) / 2 + (2 * input.glyphIconSize) / 24;
+  return -inkInset;
 }
 
 export function resolveComposerSurfaceText(
