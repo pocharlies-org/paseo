@@ -3,6 +3,7 @@ import type { StreamItem } from "@/types/stream";
 import { projectPluginTimelineItems } from "@/plugins/timeline/projection";
 import { findMountedWindowStart } from "./history-window";
 import { buildAgentStreamRenderModel } from "./model";
+import { MAX_MOUNTED_WEB_WINDOW_ITEMS } from "./web-virtualization";
 
 function createTimestamp(seed: number): Date {
   return new Date(`2026-01-01T00:00:${seed.toString().padStart(2, "0")}.000Z`);
@@ -47,7 +48,7 @@ describe("buildAgentStreamRenderModel", () => {
       historyStart: 2,
     });
 
-    expect(model.history.map((item) => item.id)).toEqual(["a3", "u3", "a2", "u2"]);
+    expect(model.history.map((item) => item.id)).toEqual(["u2", "a2", "u3", "a3"]);
     expect(model.segments.historyVirtualized).toHaveLength(0);
   });
 
@@ -69,8 +70,8 @@ describe("buildAgentStreamRenderModel", () => {
       historyStart: 2,
     });
 
-    expect(model.turnTiming.byAssistantId.has("hidden-a")).toBe(false);
-    expect(model.turnTiming.byAssistantId.get("visible-a")).toEqual({
+    expect(model.turnTiming.byItemId.has("hidden-a")).toBe(false);
+    expect(model.turnTiming.byItemId.get("visible-a")).toEqual({
       completedAt: tail[3]?.timestamp,
       durationMs: 1000,
     });
@@ -98,7 +99,7 @@ describe("buildAgentStreamRenderModel", () => {
       historyStart,
     });
 
-    expect(model.history.map((item) => item.id)).toEqual(["visible-a", "visible-u"]);
+    expect(model.history.map((item) => item.id)).toEqual(["visible-u", "visible-a"]);
   });
 
   it("keeps head separate from committed history on desktop web", () => {
@@ -123,6 +124,30 @@ describe("buildAgentStreamRenderModel", () => {
     expect(model.segments.historyMounted.length).toBeGreaterThan(0);
     expect(model.segments.liveHead.map((item) => item.id)).toEqual(["live-a"]);
     expect(model.history).not.toContain(head[0]);
+  });
+
+  it("virtualizes a desktop web turn that runs past the mounted cap", () => {
+    const length = MAX_MOUNTED_WEB_WINDOW_ITEMS + 80;
+    const tail = Array.from({ length }, (_, index) => ({
+      ...userMessage(`row-${index}`, index % 60),
+      turnId: "long-run",
+    }));
+
+    const model = buildAgentStreamRenderModel({
+      isTurnActive: false,
+      activeTurnStartedAt: null,
+      tail,
+      head: [],
+      platform: "web",
+      isMobileBreakpoint: false,
+    });
+
+    expect(model.segments.historyMounted).toHaveLength(MAX_MOUNTED_WEB_WINDOW_ITEMS);
+    expect(model.segments.historyVirtualized).toHaveLength(80);
+    expect(model.segments.historyMounted[0]?.id).toBe(
+      `row-${length - MAX_MOUNTED_WEB_WINDOW_ITEMS}`,
+    );
+    expect(model.segments.historyVirtualized[0]?.id).toBe("row-0");
   });
 
   it("keeps the full committed tail mounted on mobile web", () => {
@@ -184,7 +209,7 @@ describe("buildAgentStreamRenderModel", () => {
     });
 
     expect(model.turnTiming.runningStartedAt).toBe(tail[0]?.timestamp);
-    expect(model.turnTiming.byAssistantId.has("live-a")).toBe(false);
+    expect(model.turnTiming.byItemId.has("live-a")).toBe(false);
   });
 
   it("maps completed turn timing to assistant ids across committed history and live head", () => {
@@ -201,13 +226,13 @@ describe("buildAgentStreamRenderModel", () => {
     });
 
     expect(model.turnTiming.runningStartedAt).toBe(null);
-    expect(model.turnTiming.byAssistantId.get("live-a")).toEqual({
+    expect(model.turnTiming.byItemId.get("live-a")).toEqual({
       completedAt: head[0]?.timestamp,
       durationMs: 3000,
     });
   });
 
-  it("derives the same timing for native inverted rendering", () => {
+  it("derives the same timing on native", () => {
     const tail = [userMessage("u1", 1), assistantMessage("a1", 4)];
 
     const model = buildAgentStreamRenderModel({
@@ -219,8 +244,8 @@ describe("buildAgentStreamRenderModel", () => {
       isMobileBreakpoint: false,
     });
 
-    expect(model.segments.historyMounted.map((item) => item.id)).toEqual(["a1", "u1"]);
-    expect(model.turnTiming.byAssistantId.get("a1")).toEqual({
+    expect(model.segments.historyMounted.map((item) => item.id)).toEqual(["u1", "a1"]);
+    expect(model.turnTiming.byItemId.get("a1")).toEqual({
       completedAt: tail[1]?.timestamp,
       durationMs: 3000,
     });
@@ -238,7 +263,7 @@ describe("buildAgentStreamRenderModel", () => {
       isMobileBreakpoint: false,
     });
 
-    expect(model.turnTiming.byAssistantId.size).toBe(0);
+    expect(model.turnTiming.byItemId.size).toBe(0);
   });
 
   it.each(["web", "native"] as const)(
@@ -274,10 +299,10 @@ describe("buildAgentStreamRenderModel", () => {
 
       expect(second.history).toBe(first.history);
       expect(second.segments.historyMounted).toBe(first.segments.historyMounted);
-      expect(second.turnTiming.byAssistantId).toBe(first.turnTiming.byAssistantId);
+      expect(second.turnTiming.byItemId).toBe(first.turnTiming.byItemId);
       expect(first.history).toHaveLength(20);
-      expect(first.turnTiming.byAssistantId.has("a29")).toBe(false);
-      expect(first.turnTiming.byAssistantId.get("a38")).toEqual({
+      expect(first.turnTiming.byItemId.has("a29")).toBe(false);
+      expect(first.turnTiming.byItemId.get("a38")).toEqual({
         completedAt: tail[77]?.timestamp,
         durationMs: 1000,
       });

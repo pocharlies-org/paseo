@@ -3,6 +3,7 @@ name: Nix
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -105,7 +106,7 @@ jobs:
   build-desktop-darwin:
     # fork pocharlies-org: job del proyecto upstream, aquí no corre (INFRA-1218)
     if: github.repository == 'getpaseo/paseo'
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 

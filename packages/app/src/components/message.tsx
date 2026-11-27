@@ -1,6 +1,9 @@
+import { useDisclosureHold } from "@/agent-stream/disclosure";
+import { MessagePreview, MessageSender } from "@/components/user-message";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { getAgentAttachmentPillContent } from "@/attachments/attachment-pill-content";
 import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assistant-fork-menu";
+import { TurnMetricsButton } from "@/components/turn-metrics";
 import { AttachmentLightbox, type ImageLightboxSource } from "@/components/attachment-lightbox";
 import {
   AttachmentFrame,
@@ -9,8 +12,12 @@ import {
 } from "@/components/attachment-pill";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { useRetainedPanelActive } from "@/components/retained-panel";
-import { RewindMenu, type RewindMode } from "@/components/rewind/rewind-menu";
-import { useRewindAgentMutation } from "@/components/rewind/use-rewind-agent-mutation";
+import {
+  isRewindableMessage,
+  RewindMenu,
+  useRewindAgentMutation,
+  type RewindMode,
+} from "@/components/rewind";
 import { TaskListRow } from "@/components/task-list-row";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -26,9 +33,15 @@ import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
 import { resolveToolCallIcon } from "@/utils/tool-call-icon";
+import { useToolCallExpanded } from "@/tool-calls/expansion-context";
+import { useTargetAgentTitle } from "@/tool-calls/use-target-agent-title";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { AgentMessage } from "@getpaseo/protocol/agent-message";
-import type { AgentCapabilityFlags, ToolCallDetail } from "@getpaseo/protocol/agent-types";
+import type {
+  AgentCapabilityFlags,
+  AgentMetric,
+  ToolCallDetail,
+} from "@getpaseo/protocol/agent-types";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import MaskedView from "@react-native-masked-view/masked-view";
 import {
@@ -88,6 +101,9 @@ export type { InlinePathTarget } from "@/assistant-file-links";
 export type { AssistantForkTarget };
 
 interface UserMessageProps {
+  /** The timeline item's id, which keeps the message's expanded state. */
+  itemId: string;
+  sender?: AgentMessage["sender"];
   serverId?: string;
   agentId?: string;
   messageId?: string;
@@ -386,6 +402,8 @@ function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessage
 const MESSAGE_TEXT_DATASET = { messageText: "true" };
 
 export const UserMessage = memo(function UserMessage({
+  itemId,
+  sender,
   serverId,
   agentId,
   messageId,
@@ -472,42 +490,45 @@ export const UserMessage = memo(function UserMessage({
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
+        {sender ? <MessageSender sender={sender} serverId={serverId} /> : null}
         <View style={userMessageStylesheet.bubble}>
-          {hasImages ? (
-            <View style={imagePreviewContainerStyle}>
-              {images.map((image) => (
-                <UserMessageImagePill
-                  key={image.id}
-                  image={image}
-                  onOpen={setLightboxMetadata}
-                  accessibilityLabel={t("composer.attachments.openImage")}
-                />
-              ))}
-            </View>
-          ) : null}
-          {hasAttachments ? (
-            <View style={attachmentPreviewContainerStyle}>
-              {attachments.map((attachment, index) => {
-                const content = getAgentAttachmentPillContent(attachment, t);
-                return (
-                  <AttachmentFrame
-                    key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
-                  >
-                    <AttachmentLabel
-                      icon={content.icon}
-                      title={content.title}
-                      subtitle={content.subtitle}
-                    />
-                  </AttachmentFrame>
-                );
-              })}
-            </View>
-          ) : null}
-          {hasText ? (
-            <Text selectable style={userMessageStylesheet.text} dataSet={MESSAGE_TEXT_DATASET}>
-              {message}
-            </Text>
-          ) : null}
+          <MessagePreview itemId={itemId}>
+            {hasImages ? (
+              <View style={imagePreviewContainerStyle}>
+                {images.map((image) => (
+                  <UserMessageImagePill
+                    key={image.id}
+                    image={image}
+                    onOpen={setLightboxMetadata}
+                    accessibilityLabel={t("composer.attachments.openImage")}
+                  />
+                ))}
+              </View>
+            ) : null}
+            {hasAttachments ? (
+              <View style={attachmentPreviewContainerStyle}>
+                {attachments.map((attachment, index) => {
+                  const content = getAgentAttachmentPillContent(attachment, t);
+                  return (
+                    <AttachmentFrame
+                      key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
+                    >
+                      <AttachmentLabel
+                        icon={content.icon}
+                        title={content.title}
+                        subtitle={content.subtitle}
+                      />
+                    </AttachmentFrame>
+                  );
+                })}
+              </View>
+            ) : null}
+            {hasText ? (
+              <Text selectable style={userMessageStylesheet.text} dataSet={MESSAGE_TEXT_DATASET}>
+                {message}
+              </Text>
+            ) : null}
+          </MessagePreview>
         </View>
         {hasText ? (
           <View
@@ -518,7 +539,7 @@ export const UserMessage = memo(function UserMessage({
             <Text style={userMessageStylesheet.timestampText} testID="user-message-timestamp">
               {formattedTimestamp}
             </Text>
-            {capabilities && messageId ? (
+            {capabilities && isRewindableMessage(messageId, message) ? (
               <RewindMenu
                 capabilities={capabilities}
                 isPending={rewindMutation.isPending}
@@ -540,14 +561,25 @@ export const UserMessage = memo(function UserMessage({
 });
 
 interface AssistantTurnFooterProps {
-  getContent: () => string;
+  getContent?: () => string;
   completedAt?: Date;
   durationMs?: number | null;
   onFork?: (target: AssistantForkTarget) => Promise<void> | void;
+  /** What the provider reported about the turn. Without any, the footer has no stats button. */
+  metrics?: AgentMetric[];
 }
 
 const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
   container: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing[2],
+  },
+  actions: {
+    height: 24,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
@@ -559,20 +591,26 @@ const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
     marginTop: 0,
     marginLeft: -theme.spacing[1],
   },
-  labelWrapper: {
-    position: "relative",
+  labelButton: {
+    flex: 1,
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    minWidth: 0,
   },
-  labelSizer: {
+  label: {
+    width: "100%",
+    flexShrink: 0,
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
+    // React Native Web preserves trailing spaces at line wraps by default.
+    ...(isWeb ? { whiteSpace: "normal" } : {}),
+  },
+  overlappingLabel: {
+    marginLeft: "-100%",
+  },
+  hiddenLabel: {
     opacity: 0,
-  },
-  labelOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    color: theme.colors.foregroundMuted,
-    fontSize: STREAM_METADATA_FONT_SIZE,
   },
 }));
 
@@ -588,6 +626,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   completedAt,
   durationMs,
   onFork,
+  metrics,
 }: AssistantTurnFooterProps) {
   const { t } = useTranslation();
   const [hovered, setHovered] = useState(false);
@@ -637,32 +676,56 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     [onFork],
   );
   const canFork = Boolean(onFork);
+  const hasMetrics = metrics !== undefined && metrics.length > 0;
 
   return (
     <View style={assistantTurnFooterStylesheet.container}>
-      <TurnCopyButton
-        getContent={getContent}
-        containerStyle={assistantTurnFooterStylesheet.copyButton}
-      />
-      {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
+      {getContent || canFork || hasMetrics ? (
+        <View style={assistantTurnFooterStylesheet.actions}>
+          {getContent ? (
+            <TurnCopyButton
+              getContent={getContent}
+              containerStyle={assistantTurnFooterStylesheet.copyButton}
+            />
+          ) : null}
+          {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
+          {hasMetrics ? <TurnMetricsButton metrics={metrics} /> : null}
+        </View>
+      ) : null}
       {primaryLabel ? (
         <Pressable
+          style={assistantTurnFooterStylesheet.labelButton}
           onPress={handlePress}
           onHoverIn={handleHoverIn}
           onHoverOut={handleHoverOut}
           accessibilityRole={canSwap ? "button" : undefined}
           accessibilityLabel={canSwap ? `${durationLabel}, ended ${timestampLabel}` : primaryLabel}
         >
-          <View style={assistantTurnFooterStylesheet.labelWrapper}>
-            {/* Sizer reserves space for whichever label is longer so the
-                container width is stable across hover transitions. */}
-            <Text style={assistantTurnFooterStylesheet.labelSizer} aria-hidden>
-              {primaryLabel.length >= timestampLabel.length ? primaryLabel : timestampLabel}
+          {/* Both labels participate in layout at the available width. Overlapping their
+              columns reserves the taller wrapped height without measuring text or characters. */}
+          <Text
+            testID={!showTimestamp ? "turn-footer-timing-label" : undefined}
+            aria-hidden={showTimestamp}
+            style={[
+              assistantTurnFooterStylesheet.label,
+              showTimestamp && assistantTurnFooterStylesheet.hiddenLabel,
+            ]}
+          >
+            {primaryLabel}
+          </Text>
+          {canSwap ? (
+            <Text
+              testID={showTimestamp ? "turn-footer-timing-label" : undefined}
+              aria-hidden={!showTimestamp}
+              style={[
+                assistantTurnFooterStylesheet.label,
+                assistantTurnFooterStylesheet.overlappingLabel,
+                !showTimestamp && assistantTurnFooterStylesheet.hiddenLabel,
+              ]}
+            >
+              {timestampLabel}
             </Text>
-            <Text style={assistantTurnFooterStylesheet.labelOverlay}>
-              {showTimestamp ? timestampLabel : primaryLabel}
-            </Text>
-          </View>
+          ) : null}
         </Pressable>
       ) : null}
     </View>
@@ -878,12 +941,18 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.lg,
     borderWidth: theme.borderWidth[1],
     borderColor: "transparent",
-    paddingHorizontal: theme.spacing[2],
-    paddingVertical: theme.spacing[1],
     overflow: "hidden",
   },
   pressablePressed: {
     opacity: 0.9,
+  },
+  disclosureButton: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    flexDirection: "row",
+    alignItems: "center",
   },
   headerRow: {
     flexDirection: "row",
@@ -940,14 +1009,11 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     flexShrink: 0,
   },
   openFileButton: {
+    marginRight: theme.spacing[2],
     marginLeft: theme.spacing[1],
     padding: theme.spacing[1],
     borderRadius: theme.borderRadius.md,
     flexShrink: 0,
-  },
-  openFileButtonPlaceholderIcon: {
-    width: 14,
-    height: 14,
   },
   detailWrapper: {
     borderBottomLeftRadius: theme.borderRadius.lg,
@@ -969,6 +1035,10 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
+  },
+  // Details that do not sit in a card leave the header as a lone highlighted pill.
+  pressableExpandedDetached: {
+    borderRadius: theme.borderRadius.full,
   },
   detailWrapperBorderless: {
     borderWidth: 0,
@@ -1185,6 +1255,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     >
       <MarkdownRenderer
         text={revealedMessage}
+        agentCommands
         streaming={phase !== "complete" || revealedMessage.length < renderedMessage.text.length}
         client={client}
         workspaceRoot={workspaceRoot}
@@ -1468,9 +1539,9 @@ export const TodoListCard = memo(function TodoListCard({
     };
   }, [activity, t]);
 
-  const handleToggle = useCallback(() => {
-    setIsExpanded((prev) => !prev);
-  }, []);
+  const hold = useDisclosureHold();
+  const toggleExpanded = useCallback(() => setIsExpanded((prev) => !prev), []);
+  const handleToggle = useCallback(() => hold(toggleExpanded), [hold, toggleExpanded]);
 
   const renderDetails = useCallback(() => {
     return (
@@ -1507,7 +1578,6 @@ interface ExpandableBadgeProps {
   style?: StyleProp<ViewStyle>;
   onToggle?: () => void;
   onOpenFile?: () => void;
-  onDetailHoverChange?: (hovered: boolean) => void;
   renderDetails?: () => ReactNode;
   isLoading?: boolean;
   isError?: boolean;
@@ -1549,7 +1619,6 @@ interface ExpandableBadgeWebShimmerOverlayProps {
   secondaryLabel?: string;
   shimmerLabelTextStyle: StyleProp<TextStyle>;
   shimmerSecondaryTextStyle: StyleProp<TextStyle>;
-  showOpenFileButton: boolean;
 }
 
 function ExpandableBadgeWebShimmerOverlay({
@@ -1557,7 +1626,6 @@ function ExpandableBadgeWebShimmerOverlay({
   secondaryLabel,
   shimmerLabelTextStyle,
   shimmerSecondaryTextStyle,
-  showOpenFileButton,
 }: ExpandableBadgeWebShimmerOverlayProps) {
   return (
     <View style={expandableBadgeStylesheet.shimmerOverlay} pointerEvents="none">
@@ -1569,14 +1637,7 @@ function ExpandableBadgeWebShimmerOverlay({
           {secondaryLabel}
         </Text>
       ) : null}
-      {showOpenFileButton ? (
-        <View style={expandableBadgeStylesheet.openFileButton}>
-          <View style={expandableBadgeStylesheet.openFileButtonPlaceholderIcon} />
-        </View>
-      ) : null}
-      {!secondaryLabel && !showOpenFileButton ? (
-        <View style={expandableBadgeStylesheet.spacer} />
-      ) : null}
+      {!secondaryLabel ? <View style={expandableBadgeStylesheet.spacer} /> : null}
     </View>
   );
 }
@@ -1600,11 +1661,6 @@ interface ExpandableBadgeLabelRowProps {
   onLabelRowLayout: (event: LayoutChangeEvent) => void;
   onLabelLayout: (event: LayoutChangeEvent) => void;
   onSecondaryLayout: (event: LayoutChangeEvent) => void;
-  showOpenFileButton: boolean;
-  isOpenFileHovered: boolean;
-  onOpenFilePress: (event: GestureResponderEvent) => void;
-  onOpenFileHoverIn: () => void;
-  onOpenFileHoverOut: () => void;
 }
 
 function ExpandableBadgeLabelRow({
@@ -1626,13 +1682,7 @@ function ExpandableBadgeLabelRow({
   onLabelRowLayout,
   onLabelLayout,
   onSecondaryLayout,
-  showOpenFileButton,
-  isOpenFileHovered,
-  onOpenFilePress,
-  onOpenFileHoverIn,
-  onOpenFileHoverOut,
 }: ExpandableBadgeLabelRowProps) {
-  const { t } = useTranslation();
   return (
     <View
       style={expandableBadgeStylesheet.labelRow}
@@ -1651,30 +1701,12 @@ function ExpandableBadgeLabelRow({
         shouldMeasureWebShimmer={shouldMeasureWebShimmer}
         onSecondaryLayout={onSecondaryLayout}
       />
-      {showOpenFileButton ? (
-        <Pressable
-          onPress={onOpenFilePress}
-          onHoverIn={onOpenFileHoverIn}
-          onHoverOut={onOpenFileHoverOut}
-          accessibilityRole="button"
-          accessibilityLabel={t("message.actions.openFile")}
-          testID="tool-call-open-file"
-          style={expandableBadgeStylesheet.openFileButton}
-          hitSlop={6}
-        >
-          <ThemedFileSymlinkIcon
-            size={14}
-            uniProps={isOpenFileHovered ? foregroundColorMapping : foregroundMutedColorMapping}
-          />
-        </Pressable>
-      ) : null}
       {isWebShimmer ? (
         <ExpandableBadgeWebShimmerOverlay
           label={label}
           secondaryLabel={secondaryLabel}
           shimmerLabelTextStyle={shimmerLabelTextStyle}
           shimmerSecondaryTextStyle={shimmerSecondaryTextStyle}
-          showOpenFileButton={showOpenFileButton}
         />
       ) : null}
       {isNativeShimmer ? (
@@ -1870,7 +1902,6 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   isExpanded,
   onToggle,
   onOpenFile,
-  onDetailHoverChange,
   renderDetails,
   isLoading = false,
   isError = false,
@@ -1879,6 +1910,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   borderlessWhenExpanded = false,
   testID,
 }: ExpandableBadgeProps) {
+  const { t } = useTranslation();
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
   const [isHovered, setIsHovered] = useState(false);
   const [isOpenFileHovered, setIsOpenFileHovered] = useState(false);
@@ -1895,11 +1927,6 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   }, []);
   const handlePressIn = useCallback(() => setIsPressed(true), []);
   const handlePressOut = useCallback(() => setIsPressed(false), []);
-  const handleDetailHoverIn = useCallback(() => onDetailHoverChange?.(true), [onDetailHoverChange]);
-  const handleDetailHoverOut = useCallback(
-    () => onDetailHoverChange?.(false),
-    [onDetailHoverChange],
-  );
   const handleOpenFilePress = useCallback(
     (event: GestureResponderEvent) => {
       event.stopPropagation?.();
@@ -2047,7 +2074,10 @@ export const ExpandableBadge = memo(function ExpandableBadge({
       expandableBadgeStylesheet.pressable,
       isPressed && isInteractive ? expandableBadgeStylesheet.pressablePressed : null,
       isExpanded && expandableBadgeStylesheet.pressableExpanded,
-      isExpanded && !borderlessWhenExpanded && expandableBadgeStylesheet.pressableExpandedAttached,
+      isExpanded &&
+        (borderlessWhenExpanded
+          ? expandableBadgeStylesheet.pressableExpandedDetached
+          : expandableBadgeStylesheet.pressableExpandedAttached),
     ],
     [borderlessWhenExpanded, isExpanded, isInteractive, isPressed],
   );
@@ -2138,13 +2168,13 @@ export const ExpandableBadge = memo(function ExpandableBadge({
       onPointerEnter={isWeb ? handleHoverIn : undefined}
       onPointerLeave={isWeb ? handleHoverOut : undefined}
     >
-      <Pressable
-        {...pressHandlers}
-        disabled={!isInteractive}
-        accessibilityState={accessibilityState}
-        style={pressableStyle}
-      >
-        <View style={expandableBadgeStylesheet.headerRow}>
+      <View style={[pressableStyle, expandableBadgeStylesheet.headerRow]}>
+        <Pressable
+          {...pressHandlers}
+          disabled={!isInteractive}
+          accessibilityState={accessibilityState}
+          style={expandableBadgeStylesheet.disclosureButton}
+        >
           <View style={expandableBadgeStylesheet.iconBadge}>{iconSlotNode}</View>
           <ExpandableBadgeLabelRow
             label={label}
@@ -2165,23 +2195,30 @@ export const ExpandableBadge = memo(function ExpandableBadge({
             onLabelRowLayout={handleLabelRowLayout}
             onLabelLayout={handleLabelLayout}
             onSecondaryLayout={handleSecondaryLayout}
-            showOpenFileButton={Boolean(onOpenFile && isHovered)}
-            isOpenFileHovered={isOpenFileHovered}
-            onOpenFilePress={handleOpenFilePress}
-            onOpenFileHoverIn={handleOpenFileHoverIn}
-            onOpenFileHoverOut={handleOpenFileHoverOut}
           />
-        </View>
-      </Pressable>
-      {detailContent ? (
-        <Pressable
-          ref={detailWrapperRef}
-          style={detailWrapperStyle}
-          onHoverIn={handleDetailHoverIn}
-          onHoverOut={handleDetailHoverOut}
-        >
-          {detailContent}
         </Pressable>
+        {onOpenFile && isHovered ? (
+          <Pressable
+            onPress={handleOpenFilePress}
+            onHoverIn={handleOpenFileHoverIn}
+            onHoverOut={handleOpenFileHoverOut}
+            accessibilityRole="button"
+            accessibilityLabel={t("message.actions.openFile")}
+            testID="tool-call-open-file"
+            style={expandableBadgeStylesheet.openFileButton}
+            hitSlop={6}
+          >
+            <ThemedFileSymlinkIcon
+              size={14}
+              uniProps={isOpenFileHovered ? foregroundColorMapping : foregroundMutedColorMapping}
+            />
+          </Pressable>
+        ) : null}
+      </View>
+      {detailContent ? (
+        <View ref={detailWrapperRef} style={detailWrapperStyle}>
+          {detailContent}
+        </View>
       ) : null}
     </View>
   );
@@ -2201,13 +2238,13 @@ function areExpandableBadgePropsEqual(previous: ExpandableBadgeProps, next: Expa
   if (previous.testID !== next.testID) return false;
   if (previous.onToggle !== next.onToggle) return false;
   if (previous.onOpenFile !== next.onOpenFile) return false;
-  if (previous.onDetailHoverChange !== next.onDetailHoverChange) return false;
   if (previous.renderDetails !== next.renderDetails) return false;
   return true;
 }
 
 interface ToolCallProps {
   agentMessage?: AgentMessage;
+  serverId?: string;
   toolName: string;
   args?: unknown;
   result?: unknown;
@@ -2218,16 +2255,19 @@ interface ToolCallProps {
   metadata?: Record<string, unknown>;
   isLastInSequence?: boolean;
   disableOuterSpacing?: boolean;
-  onInlineDetailsHoverChange?: (hovered: boolean) => void;
   onInlineDetailsExpandedChange?: (expanded: boolean) => void;
   onOpenFilePath?: (filePath: string) => void;
   defaultExpanded?: boolean;
   forceInline?: boolean;
   maxDetailHeight?: number;
+  itemId: string;
+  /** Shown as its own row rather than inside a tool call group. */
+  standalone?: boolean;
 }
 
 export const ToolCall = memo(function ToolCall({
   agentMessage,
+  serverId,
   toolName,
   args,
   result,
@@ -2238,18 +2278,24 @@ export const ToolCall = memo(function ToolCall({
   metadata,
   isLastInSequence = false,
   disableOuterSpacing,
-  onInlineDetailsHoverChange,
   onInlineDetailsExpandedChange,
   onOpenFilePath,
   defaultExpanded,
   forceInline = false,
   maxDetailHeight = 400,
+  itemId,
+  standalone = true,
 }: ToolCallProps) {
   const { openToolCall } = useToolCallSheet();
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
+  const { expanded: isExpanded, toggle: toggleExpanded } = useToolCallExpanded({
+    callId: itemId,
+    defaultExpanded: defaultExpanded ?? false,
+    standalone,
+  });
 
   const isMobile = useIsCompactFormFactor();
   const shouldRenderInline = !isMobile || forceInline;
+  const hold = useDisclosureHold();
 
   const effectiveDetail = useMemo<ToolCallDetail | undefined>(() => {
     if (detail) {
@@ -2265,6 +2311,7 @@ export const ToolCall = memo(function ToolCall({
     return undefined;
   }, [detail, args, result]);
 
+  const targetAgentTitle = useTargetAgentTitle({ serverId, toolName, detail: effectiveDetail });
   const presentation = useMemo(
     () =>
       buildToolCallPresentation({
@@ -2275,9 +2322,10 @@ export const ToolCall = memo(function ToolCall({
         detail: effectiveDetail,
         metadata,
         cwd,
+        targetAgentTitle,
         resolveIcon: resolveToolCallIcon,
       }),
-    [toolName, status, error, effectiveDetail, metadata, cwd, agentMessage],
+    [toolName, status, error, effectiveDetail, metadata, cwd, agentMessage, targetAgentTitle],
   );
   const handleOpenFile = useMemo(() => {
     const openFilePath = presentation.openFilePath;
@@ -2299,10 +2347,12 @@ export const ToolCall = memo(function ToolCall({
         showLoadingSkeleton: presentation.isLoadingDetails,
       });
     } else {
-      setIsExpanded((prev) => !prev);
+      hold(toggleExpanded);
     }
   }, [
+    hold,
     shouldRenderInline,
+    toggleExpanded,
     openToolCall,
     toolName,
     presentation.detail,
@@ -2312,13 +2362,6 @@ export const ToolCall = memo(function ToolCall({
     presentation.icon,
     presentation.isLoadingDetails,
   ]);
-
-  useEffect(() => {
-    if (!onInlineDetailsHoverChange || !shouldRenderInline || isExpanded) {
-      return;
-    }
-    onInlineDetailsHoverChange(false);
-  }, [isExpanded, shouldRenderInline, onInlineDetailsHoverChange]);
 
   useEffect(() => {
     if (!onInlineDetailsExpandedChange) {
@@ -2386,13 +2429,14 @@ export const ToolCall = memo(function ToolCall({
       isError={status === "failed"}
       isLastInSequence={isLastInSequence}
       disableOuterSpacing={disableOuterSpacing}
-      onDetailHoverChange={onInlineDetailsHoverChange}
     />
   );
 }, areToolCallPropsEqual);
 
 function areToolCallPropsEqual(previous: ToolCallProps, next: ToolCallProps) {
   if (previous.toolName !== next.toolName) return false;
+  if (previous.serverId !== next.serverId) return false;
+  if (previous.agentMessage !== next.agentMessage) return false;
   if (previous.args !== next.args) return false;
   if (previous.result !== next.result) return false;
   if (previous.error !== next.error) return false;
@@ -2406,5 +2450,7 @@ function areToolCallPropsEqual(previous: ToolCallProps, next: ToolCallProps) {
   if (previous.defaultExpanded !== next.defaultExpanded) return false;
   if (previous.forceInline !== next.forceInline) return false;
   if (previous.maxDetailHeight !== next.maxDetailHeight) return false;
+  if (previous.itemId !== next.itemId) return false;
+  if (previous.standalone !== next.standalone) return false;
   return true;
 }

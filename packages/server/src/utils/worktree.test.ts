@@ -3,8 +3,11 @@ import {
   createWorktree as createWorktreePrimitive,
   deriveWorktreeProjectHash,
   deletePaseoWorktree,
+  readWorktreeHead,
   isPaseoOwnedWorktreeCwd,
+  listPaseoWorktrees,
   mapWorkspaceCwdToWorktree,
+  runWorktreeTeardownCommands,
   slugify,
   type CreateWorktreeOptions,
   type WorktreeConfig,
@@ -31,7 +34,7 @@ interface LegacyCreateWorktreeTestOptions {
   cwd: string;
   baseBranch: string;
   worktreeSlug: string;
-  runSetup?: boolean;
+
   paseoHome?: string;
 }
 
@@ -50,7 +53,7 @@ function createLegacyWorktreeForTest(
       baseBranch: options.baseBranch,
       branchName: options.branchName,
     },
-    runSetup: options.runSetup ?? true,
+
     paseoHome: options.paseoHome,
   });
 }
@@ -95,6 +98,14 @@ describe("paseo worktree manager", () => {
     await rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
+  function cloneBareRepository(): string {
+    const bareRepo = join(tempDir, "bare.git");
+    execFileSync("git", ["clone", "--bare", "-q", repoDir, bareRepo]);
+    // A bare clone does not copy the checkout's local config; its linked worktrees share this one.
+    execFileSync("git", ["--git-dir", bareRepo, "config", "core.autocrlf", "false"]);
+    return bareRepo;
+  }
+
   it.each([
     { existing: [], preferred: "main/patch-1", expected: "main-1/patch-1" },
     { existing: ["main-1"], preferred: "main/patch-1", expected: "main-2/patch-1" },
@@ -132,7 +143,7 @@ describe("paseo worktree manager", () => {
         cwd: repoDir,
         paseoHome,
         worktreeSlug: "fork-review",
-        runSetup: false,
+
         source: {
           kind: "checkout-change-request",
           forge: "gitea",
@@ -171,13 +182,115 @@ describe("paseo worktree manager", () => {
     expect(existsSync(created.worktreePath)).toBe(true);
 
     const ownership = await isPaseoOwnedWorktreeCwd(created.worktreePath, { paseoHome });
-    expect(ownership.allowed).toBe(true);
+    expect(ownership).toMatchObject({ allowed: true, worktreePath: created.worktreePath });
+    // Windows may report the same root through native 8.3 and JS long spellings.
+    const nativeWorktreePath = realpathSync.native(created.worktreePath);
+    await expect(
+      runWorktreeTeardownCommands({
+        worktreePath: created.worktreePath,
+        teardownCwd: nativeWorktreePath,
+      }),
+    ).resolves.toEqual([]);
     await expect(
       isPaseoOwnedWorktreeCwd(join(created.worktreePath, "packages", "app"), { paseoHome }),
     ).resolves.toMatchObject({
       allowed: true,
       worktreePath: created.worktreePath,
     });
+  });
+
+  it("retains bounded diagnostic text per teardown output stream", async () => {
+    const limit = 1024 * 1024;
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({
+        worktree: {
+          teardown: `node -e "process.stdout.write('x'.repeat(${2 * limit})); process.stderr.write('y'.repeat(${2 * limit}))"`,
+        },
+      }),
+    );
+
+    const [result] = await runWorktreeTeardownCommands({
+      worktreePath: repoDir,
+      repoRootPath: repoDir,
+      branchName: "main",
+    });
+
+    expect({
+      exitCode: result.exitCode,
+      stdoutLength: result.stdout.length,
+      stderrLength: result.stderr.length,
+    }).toEqual({ exitCode: 0, stdoutLength: limit, stderrLength: limit });
+  });
+
+  it("stops teardown at its deadline while a plugin hook is pending, without starting the command", async () => {
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({
+        worktree: {
+          teardown: `node -e "require('fs').writeFileSync('ran.txt', 'ran')"`,
+          teardownTimeoutMs: 100,
+        },
+      }),
+    );
+    let hookDone!: () => void;
+    const hookSettled = new Promise<void>((resolve) => {
+      hookDone = resolve;
+    });
+
+    const startedAt = Date.now();
+    await expect(
+      runWorktreeTeardownCommands({
+        worktreePath: repoDir,
+        repoRootPath: repoDir,
+        branchName: "main",
+        prepareCommand: async ({ env }) => {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          hookDone();
+          return { env };
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "WorktreeTeardownError",
+      message: `Worktree teardown command failed: node -e "require('fs').writeFileSync('ran.txt', 'ran')"\nTimed out after 0.1s`,
+      results: [],
+    });
+    expect(Date.now() - startedAt).toBeLessThan(900);
+    // The hook answering after the deadline does not start the command.
+    await hookSettled;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(existsSync(join(repoDir, "ran.txt"))).toBe(false);
+  });
+
+  it("keeps a deleted worktree separate from the Paseo worktree that holds its daemon home", async () => {
+    const outer = await createLegacyWorktreeForTest({
+      branchName: "outer-branch",
+      cwd: repoDir,
+      baseBranch: "main",
+      worktreeSlug: "outer",
+      paseoHome,
+    });
+    const nestedPaseoHome = join(outer.worktreePath, ".dev-home");
+    const inner = await createLegacyWorktreeForTest({
+      branchName: "inner-branch",
+      cwd: repoDir,
+      baseBranch: "main",
+      worktreeSlug: "inner",
+      paseoHome: nestedPaseoHome,
+    });
+    rmSync(inner.worktreePath, { recursive: true, force: true });
+    execFileSync("git", ["worktree", "prune"], { cwd: repoDir });
+
+    await expect(
+      isPaseoOwnedWorktreeCwd(inner.worktreePath, { paseoHome: nestedPaseoHome }),
+    ).resolves.toMatchObject({ allowed: true, worktreePath: inner.worktreePath });
+
+    await deletePaseoWorktree({
+      cwd: repoDir,
+      worktreePath: inner.worktreePath,
+      paseoHome: nestedPaseoHome,
+    });
+    expect(existsSync(join(outer.worktreePath, "file.txt"))).toBe(true);
   });
 
   it("rejects paths that are not under the paseo worktrees root", async () => {
@@ -269,6 +382,44 @@ describe("paseo worktree manager", () => {
     });
   });
 
+  it("creates and removes a worktree from a bare repository with no linked checkouts", async () => {
+    const bareRepo = cloneBareRepository();
+
+    const created = await createLegacyWorktreeForTest({
+      branchName: "from-bare",
+      cwd: bareRepo,
+      baseBranch: "main",
+      worktreeSlug: "from-bare",
+      paseoHome,
+    });
+    expect(readFileSync(join(created.worktreePath, "file.txt"), "utf8")).toBe("hello\n");
+
+    await deletePaseoWorktree({ cwd: bareRepo, worktreePath: created.worktreePath, paseoHome });
+    expect(existsSync(created.worktreePath)).toBe(false);
+    expect(
+      execFileSync("git", ["--git-dir", bareRepo, "worktree", "list", "--porcelain"], {
+        encoding: "utf8",
+      }),
+    ).not.toContain(created.worktreePath);
+  });
+
+  it("lists the worktrees of a bare repository that only Paseo checkouts use", async () => {
+    const bareRepo = cloneBareRepository();
+    const created = await createLegacyWorktreeForTest({
+      branchName: "listed",
+      cwd: bareRepo,
+      baseBranch: "main",
+      worktreeSlug: "listed",
+      paseoHome,
+    });
+
+    const worktrees = await listPaseoWorktrees({ cwd: bareRepo, paseoHome });
+
+    expect(worktrees.map((entry) => [entry.path, entry.branchName])).toEqual([
+      [realpathSync.native(created.worktreePath), "listed"],
+    ]);
+  });
+
   it("deletes a worktree whose .git admin dir has already been removed", async () => {
     const created = await createLegacyWorktreeForTest({
       branchName: "orphan-delete-branch",
@@ -290,6 +441,45 @@ describe("paseo worktree manager", () => {
       paseoHome,
     });
 
+    expect(existsSync(created.worktreePath)).toBe(false);
+  });
+
+  it("does not read a parent repository's HEAD when the worktree has no .git", async () => {
+    const directory = join(repoDir, "missing-worktree");
+    mkdirSync(directory);
+    await expect(readWorktreeHead(directory)).resolves.toBeNull();
+  });
+
+  it("keeps a worktree when writing its retention ref fails", async () => {
+    const created = await createLegacyWorktreeForTest({
+      branchName: "ref-write-failure",
+      cwd: repoDir,
+      baseBranch: "main",
+      worktreeSlug: "ref-write-failure",
+      paseoHome,
+    });
+    mkdirSync(join(repoDir, ".git", "refs", "paseo"), { recursive: true });
+    writeFileSync(join(repoDir, ".git", "refs", "paseo", "kept-commits"), "blocked\n");
+
+    await expect(
+      deletePaseoWorktree({ cwd: repoDir, worktreePath: created.worktreePath, paseoHome }),
+    ).rejects.toThrow();
+    expect(existsSync(created.worktreePath)).toBe(true);
+  });
+
+  it("deletes a worktree when Git reports its source through native and long path spellings", async () => {
+    const created = await createLegacyWorktreeForTest({
+      branchName: "identity-delete",
+      cwd: repoDir,
+      baseBranch: "main",
+      worktreeSlug: "identity-delete",
+      paseoHome,
+    });
+    await deletePaseoWorktree({
+      cwd: realpathSync.native(repoDir),
+      worktreePath: created.worktreePath,
+      paseoHome,
+    });
     expect(existsSync(created.worktreePath)).toBe(false);
   });
 
