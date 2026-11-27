@@ -103,6 +103,21 @@ jobs:
           PASEO_OWN_CLI_TGZ="$PWD/$cli" PASEO_OWN_SERVER_TGZ="$PWD/$server" \
             npx vitest run scripts/own-cli-tarball.test.mjs --bail=1
 
+      # SC-6820: el runner arc-k8s (ghcr.io/actions/actions-runner) no trae la CLI de GitHub: el
+      # paso de publicación moría con «gh: command not found» (run 6, main, 2026-11-26). Se instala
+      # fijando versión; vuelve gratis si algún día el runner la incorpora (el `if` la salta).
+      - name: Ensure gh CLI (arc-k8s no la trae)
+        if: inputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          if command -v gh >/dev/null 2>&1; then gh --version; exit 0; fi
+          v=2.106.0
+          curl -fsSL -o "$RUNNER_TEMP/gh.tar.gz" \
+            "https://github.com/cli/cli/releases/download/v${v}/gh_${v}_linux_amd64.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gh.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gh_${v}_linux_amd64/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/gh_${v}_linux_amd64/bin/gh" --version
+
       - name: Create or update the GitHub release
         if: inputs.publish == 'true'
         env:
